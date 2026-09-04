@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>D3FEND Mapping | Intelgenz</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #102544;
+        --muted: #61708a;
+        --line: #dce5f1;
+        --panel: #ffffff;
+        --canvas: #f6f8fc;
+        --purple: #5b00f5;
+        --green: #13a862;
+        --red: #f4424b;
+        --red-75: #ff858b;
+        --red-50: #ffd0d3;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--canvas); color: var(--ink); }
+      button, input { font: inherit; }
+      button { cursor: pointer; }
+
+      .toolbar {
+        position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,.97);
+        padding: 18px 32px 20px; border-bottom: 1px solid var(--line);
+      }
+      .toolbar__top, .toolbar__bottom { display: flex; gap: 16px; align-items: center; }
+      .toolbar__top { justify-content: space-between; }
+      .toolbar__bottom { margin-top: 16px; align-items: flex-start; }
+      .title { margin: 0; font-size: 17px; letter-spacing: .02em; text-transform: uppercase; }
+      .count { display: inline-flex; margin-left: 8px; padding: 4px 10px; border-radius: 999px; background: #1f2d45; color: white; font-size: 13px; }
+      .search { position: relative; flex: 1; max-width: 430px; }
+      .search label { display: block; margin: 0 0 6px 2px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+      .search input { width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: 9px; outline: none; }
+      .search input:focus { border-color: var(--purple); box-shadow: 0 0 0 3px #5b00f51a; }
+      .suggestions { position: absolute; top: calc(100% + 6px); width: 100%; max-height: 240px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 12px 28px #14213d20; }
+      .suggestions[hidden] { display: none; }
+      .suggestion { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border: 0; background: transparent; text-align: left; color: var(--ink); }
+      .suggestion:hover { background: #f1edff; }
+      .suggestion small { color: var(--muted); margin-left: 8px; }
+      .selected-wrap { flex: 1; min-width: 260px; }
+      .selected-label { display: block; margin: 0 0 6px 2px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+      .selected { display: flex; flex-wrap: wrap; gap: 9px; min-height: 43px; padding: 5px; border: 1px dashed var(--line); border-radius: 9px; background: #fafcff; }
+      .selected-empty { align-self: center; padding: 0 7px; color: var(--muted); font-size: 14px; }
+      .chip { display: inline-flex; align-items: center; gap: 7px; padding: 8px 10px 8px 12px; border: 1px solid var(--line); border-radius: 999px; background: white; color: #33445f; }
+      .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #417ff0; }
+      .chip button { border: 0; background: #eee9ff; color: var(--purple); border-radius: 50%; width: 19px; height: 19px; line-height: 16px; }
+      .clear { border: 1px solid #ffc4c7; color: var(--red); background: #fff7f7; padding: 8px 14px; border-radius: 7px; }
+      .show { border: 0; border-radius: 10px; padding: 12px 27px; background: var(--purple); color: white; font-weight: 700; box-shadow: 0 5px 10px #5b00f540; }
+      .show:disabled { opacity: .5; cursor: not-allowed; }
+
+      main { padding: 30px 32px 52px; }
+      .legend { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; margin-bottom: 20px; color: #3c4e69; font-size: 14px; }
+      .legend strong { font-size: 13px; letter-spacing: .04em; }
+      .legend span { display: inline-flex; align-items: center; gap: 7px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+      .dot.red { background: var(--red); }
+      .dot.mid { background: var(--red-75); }
+      .dot.light { background: var(--red-50); }
+      .state { margin: 80px auto; max-width: 580px; text-align: center; color: var(--muted); }
+      .state h2 { color: var(--ink); }
+      .error { color: #a61620; }
+
+      .mapping-heading { margin: 28px 0 12px; font-size: 20px; }
+      .ttp-section { border: 1px solid var(--line); border-radius: 11px; overflow: hidden; background: var(--panel); box-shadow: 0 4px 14px #13294b08; }
+      .ttp-grid { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(242px, 1fr); overflow-x: auto; }
+      .ttp-column { min-width: 0; border-right: 1px solid var(--line); }
+      .ttp-column:last-child { border-right: 0; }
+      .ttp-column h3 { min-height: 57px; display: grid; place-items: center; margin: 0; padding: 13px; font-size: 15px; text-align: center; background: #fafcff; border-bottom: 1px solid var(--line); }
+      .ttp-card { width: 100%; min-height: 118px; padding: 16px 18px; border: 0; border-bottom: 1px solid var(--line); background: white; color: var(--ink); text-align: center; }
+      .ttp-card:hover { filter: brightness(.98); }
+      .ttp-card:last-child { border-bottom: 0; }
+      .ttp-card h4 { margin: 10px 0 4px; font-size: 14px; }
+      .ttp-card p { margin: 0; font-size: 12px; opacity: .82; }
+      .ttp-details { display: none; padding: 12px 17px; border-bottom: 1px solid var(--line); background: #fbfcff; color: var(--ink); text-align: left; font-size: 13px; }
+      .ttp-details.open { display: block; }
+
+      .d3fend-section { margin-top: 26px; border: 1px solid var(--line); border-radius: 11px; overflow: hidden; background: var(--panel); box-shadow: 0 4px 14px #13294b08; }
+      .d3fend-section__title { margin: 0; padding: 18px 22px; font-size: 18px; border-bottom: 1px solid var(--line); }
+      .d3fend-section__title::before { content: "☰"; margin-right: 12px; color: var(--purple); font-size: 14px; }
+      .defense-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
+      .defense-column { border-right: 1px solid var(--line); min-width: 0; }
+      .defense-column:last-child { border-right: 0; }
+      .defense-column h3 { min-height: 59px; display: grid; place-items: center; margin: 0; padding: 14px; font-size: 15px; text-align: center; background: #fafcff; border-bottom: 1px solid var(--line); }
+      .defense-card { width: 100%; min-height: 138px; padding: 17px 19px; border: 0; border-bottom: 1px solid var(--line); background: white; color: var(--ink); text-align: left; }
+      .defense-card:hover { filter: brightness(.98); }
+      .defense-card:last-child { border-bottom: 0; }
+      .overlap-25 { background: #fff1f2; }
+      .overlap-50 { background: var(--red-50); }
+      .overlap-75 { background: var(--red-75); }
+      .overlap-100 { background: var(--red); color: white; }
+      .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+      .id { display: inline-block; padding: 3px 8px; border-radius: 999px; background: #ffffffda; color: var(--ink); font-size: 12px; font-weight: 800; }
+      .defense-card h4 { margin: 10px 0 4px; font-size: 15px; }
+      .defense-card p { margin: 0; font-size: 13px; opacity: .84; }
+      .badge { display: inline-flex; align-items: center; gap: 5px; margin-top: 13px; padding: 4px 9px; border: 1px solid currentColor; border-radius: 999px; font-size: 12px; }
+      .badge::before { content: ""; width: 7px; height: 7px; background: currentColor; border-radius: 50%; }
+      .details { display: none; padding: 14px 19px 18px; border-bottom: 1px solid var(--line); background: #fbfcff; color: var(--ink); }
+      .details.open { display: block; }
+      .details h5 { margin: 0 0 9px; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+      .source { padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
+      .source:first-of-type { border-top: 0; }
+      .source strong { display: block; }
+      .source small { color: var(--muted); }
+
+      @media (max-width: 720px) {
+        .toolbar, main { padding-left: 16px; padding-right: 16px; }
+        .toolbar__top { align-items: flex-start; }
+        .toolbar__bottom { align-items: stretch; flex-direction: column; }
+        .search { max-width: none; }
+        .show { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="toolbar__top">
+        <h1 class="title">Malware Mapping <span class="count" id="count">0 selected</span></h1>
+        <button class="clear" id="clear" type="button">Clear all ×</button>
+      </div>
+      <div class="toolbar__bottom">
+        <div class="search">
+          <label for="search">Find malware</label>
+          <input id="search" type="search" autocomplete="off" placeholder="Search malware by name (minimum 2 characters)" />
+          <div id="suggestions" class="suggestions" hidden></div>
+        </div>
+        <div class="selected-wrap">
+          <span class="selected-label">Selected malware</span>
+          <div id="selected" class="selected" aria-live="polite"></div>
+        </div>
+        <button class="show" id="show" type="button" disabled>Show Mapping</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="legend">
+        <span><i class="dot"></i>No overlap</span>
+        <span><i class="dot red"></i>100%</span>
+        <span><i class="dot mid"></i>75%</span>
+        <span><i class="dot light"></i>50% / 25%</span>
+        <strong>Click a card to see the malware and ATT&amp;CK-to-D3FEND mapping details.</strong>
+      </div>
+      <div class="state" id="state">
+        <h2>Select malware to view its ATT&amp;CK and D3FEND mappings</h2>
+        <p>Search by name, choose one or more malware records, then select <em>Show Mapping</em>.</p>
+      </div>
+      <section id="ttp-results" aria-live="polite"></section>
+      <section id="d3fend-results" aria-live="polite"></section>
+      <section id="nist-results" aria-live="polite"></section>
+    </main>
+
+    <script>
+      const API_BASE = `${window.location.origin}/api/v1`;
+      const selected = new Map();
+      const search = document.querySelector('#search');
+      const suggestions = document.querySelector('#suggestions');
+      const selectedElement = document.querySelector('#selected');
+      const count = document.querySelector('#count');
+      const showButton = document.querySelector('#show');
+      const clearButton = document.querySelector('#clear');
+      const state = document.querySelector('#state');
+      const ttpResults = document.querySelector('#ttp-results');
+      const d3fendResults = document.querySelector('#d3fend-results');
+      const nistResults = document.querySelector('#nist-results');
+      let timer;
+      let searchResults = [];
+
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function renderSelected() {
+        selectedElement.replaceChildren();
+        if (!selected.size) {
+          selectedElement.append(element('span', 'selected-empty', 'No malware selected yet'));
+        }
+        for (const malware of selected.values()) {
+          const chip = element('span', 'chip', malware.name);
+          const remove = element('button', '', '×');
+          remove.type = 'button';
+          remove.title = `Remove ${malware.name}`;
+          remove.addEventListener('click', () => { selected.delete(malware.malware_id); renderSelected(); });
+          chip.append(remove);
+          selectedElement.append(chip);
+        }
+        count.textContent = `${selected.size} selected`;
+        showButton.disabled = selected.size === 0;
+      }
+
+      function hideSuggestions() {
+        searchResults = [];
+        suggestions.hidden = true;
+        suggestions.replaceChildren();
+      }
+
+      function selectMalware(malware) {
+        selected.set(malware.malware_id, malware);
+        search.value = '';
+        searchResults = [];
+        hideSuggestions();
+        renderSelected();
+        search.focus();
+      }
+
+      async function searchMalware() {
+        const query = search.value.trim();
+        if (query.length < 2) return hideSuggestions();
+        try {
+          const response = await fetch(`${API_BASE}/threat-ttps/malware/search?query=${encodeURIComponent(query)}&limit=10`);
+          if (!response.ok) throw new Error('Search is unavailable.');
+          const data = await response.json();
+          searchResults = data.results.filter(malware => !selected.has(malware.malware_id));
+          suggestions.replaceChildren();
+          for (const malware of searchResults) {
+            const option = element('button', 'suggestion');
+            option.type = 'button';
+            const label = element('span', '', malware.name);
+            label.append(element('small', '', `#${malware.malware_id}`));
+            option.append(label, element('strong', '', '+ Add'));
+            option.addEventListener('pointerdown', event => {
+              event.preventDefault();
+              selectMalware(malware);
+            });
+            option.addEventListener('click', () => selectMalware(malware));
+            suggestions.append(option);
+          }
+          suggestions.hidden = suggestions.childElementCount === 0;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Search is unavailable.';
+          suggestions.replaceChildren(element('div', 'suggestion', message));
+          suggestions.hidden = false;
+        }
+      }
+
+      function overlapClass(percentage) {
+        if (percentage >= 100) return 'overlap-100';
+        if (percentage >= 75) return 'overlap-75';
+        if (percentage >= 50) return 'overlap-50';
+        if (percentage > 0) return 'overlap-25';
+        return '';
+      }
+
+      function createDetails(technique) {
+        const details = element('div', 'details');
+        details.append(element('h5', '', 'Source ATT&CK techniques'));
+        for (const source of technique.attack_techniques) {
+          const item = element('div', 'source');
+          const name = source.subtechnique_name
+            ? `${source.technique_name} / ${source.subtechnique_name}`
+            : source.technique_name;
+          item.append(element('strong', '', `${source.technique_id} · ${name}`));
+          item.append(element('small', '', `${source.tactics.join(', ')} · ${source.malwares.map(m => m.name).join(', ')}`));
+          details.append(item);
+        }
+        return details;
+      }
+
+      function createCard(technique) {
+        const wrapper = document.createDocumentFragment();
+        const card = element('button', `defense-card ${overlapClass(technique.overlap_percentage)}`);
+        card.type = 'button';
+        card.setAttribute('aria-expanded', 'false');
+        const head = element('div', 'card-head');
+        head.append(element('span', 'id', technique.d3fend_id));
+        head.append(element('span', '', 'ⓘ'));
+        card.append(head);
+        card.append(element('h4', '', technique.name));
+        if (technique.parent_technique) card.append(element('p', '', technique.parent_technique));
+        const label = technique.has_overlap ? `Overlap ${technique.overlap_percentage}%` : 'No overlap';
+        card.append(element('span', 'badge', label));
+        const details = createDetails(technique);
+        card.addEventListener('click', () => {
+          const isOpen = details.classList.toggle('open');
+          card.setAttribute('aria-expanded', String(isOpen));
+        });
+        wrapper.append(card, details);
+        return wrapper;
+      }
+
+      function createTtpCard(technique) {
+        const wrapper = document.createDocumentFragment();
+        const card = element('button', `ttp-card ${overlapClass(technique.overlap_percentage)}`);
+        card.type = 'button';
+        card.setAttribute('aria-expanded', 'false');
+        card.append(element('span', 'id', technique.technique_id));
+        card.append(element('h4', '', technique.subtechnique_name || technique.technique_name));
+        if (technique.subtechnique_name) card.append(element('p', '', technique.technique_name));
+        card.append(element('span', 'badge', technique.has_overlap ? `Overlap ${technique.overlap_percentage}%` : 'No overlap'));
+        const details = element('div', 'ttp-details');
+        details.textContent = `Used by: ${technique.malwares.map(malware => malware.name).join(', ')}`;
+        card.addEventListener('click', () => {
+          const isOpen = details.classList.toggle('open');
+          card.setAttribute('aria-expanded', String(isOpen));
+        });
+        wrapper.append(card, details);
+        return wrapper;
+      }
+
+      function renderTtpResults(data) {
+        ttpResults.replaceChildren();
+        if (!data.tactics.length) return;
+        const heading = element('h2', 'mapping-heading', 'ATT&CK Technique Mapping');
+        const section = element('section', 'ttp-section');
+        const grid = element('div', 'ttp-grid');
+        for (const tactic of data.tactics) {
+          const column = element('section', 'ttp-column');
+          column.append(element('h3', '', tactic.tactic_name));
+          tactic.techniques.forEach(technique => column.append(createTtpCard(technique)));
+          grid.append(column);
+        }
+        section.append(grid);
+        ttpResults.append(heading, section);
+      }
+
+      function renderD3fendResults(data) {
+        d3fendResults.replaceChildren();
+        if (!data.d3fend_tactics.length) {
+          d3fendResults.append(element('p', 'state', 'No D3FEND countermeasures are mapped for this selection.'));
+          return;
+        }
+        d3fendResults.append(element('h2', 'mapping-heading', 'D3FEND Countermeasure Mapping'));
+        for (const tactic of data.d3fend_tactics) {
+          const section = element('section', 'd3fend-section');
+          section.append(element('h2', 'd3fend-section__title', tactic.tactic_name));
+          const grid = element('div', 'defense-grid');
+          const groups = new Map();
+          for (const technique of tactic.techniques) {
+            const parent = technique.parent_technique || 'Other D3FEND Techniques';
+            if (!groups.has(parent)) groups.set(parent, []);
+            groups.get(parent).push(technique);
+          }
+          for (const [parent, techniques] of groups) {
+            const column = element('section', 'defense-column');
+            column.append(element('h3', '', parent));
+            techniques.forEach(technique => column.append(createCard(technique)));
+            grid.append(column);
+          }
+          section.append(grid);
+          d3fendResults.append(section);
+        }
+      }
+
+      function renderNistResults(data) {
+        nistResults.replaceChildren();
+        if (!data.nist_control_families.length) return;
+        nistResults.append(element('h2', 'mapping-heading', 'ATT&CK TTP → NIST 800-53 Rev. 5 Controls'));
+        for (const family of data.nist_control_families) {
+          const section = element('section', 'd3fend-section');
+          section.append(element('h2', 'd3fend-section__title', `${family.family_id} Control Family`));
+          const grid = element('div', 'defense-grid');
+          const column = element('section', 'defense-column');
+          column.append(element('h3', '', 'Mapped NIST Controls'));
+          for (const control of family.controls) {
+            const card = element('button', `defense-card ${overlapClass(control.overlap_percentage)}`);
+            card.type = 'button';
+            card.setAttribute('aria-expanded', 'false');
+            card.append(element('span', 'id', control.control_id));
+            card.append(element('h4', '', control.catalog));
+            card.append(element('p', '', `D3FEND relation: ${control.relations.join(', ')}`));
+            card.append(element('span', 'badge', control.has_overlap ? `Overlap ${control.overlap_percentage}%` : 'No overlap'));
+            const details = element('div', 'details');
+            details.append(element('h5', '', 'TTP → D3FEND source'));
+            for (const source of control.d3fend_techniques) {
+              const item = element('div', 'source');
+              item.append(element('strong', '', `${source.d3fend_id} · ${source.name}`));
+              item.append(element('small', '', `ATT&CK: ${source.attack_technique_ids.join(', ')}`));
+              details.append(item);
+            }
+            card.addEventListener('click', () => {
+              const isOpen = details.classList.toggle('open');
+              card.setAttribute('aria-expanded', String(isOpen));
+            });
+            column.append(card, details);
+          }
+          grid.append(column);
+          section.append(grid);
+          nistResults.append(section);
+        }
+      }
+
+      async function loadMappings() {
+        showButton.disabled = true;
+        showButton.textContent = 'Loading…';
+        state.hidden = false;
+        state.innerHTML = '<h2>Loading ATT&CK and D3FEND mappings…</h2>';
+        ttpResults.replaceChildren();
+        d3fendResults.replaceChildren();
+        nistResults.replaceChildren();
+        try {
+          const request = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ malware_ids: [...selected.keys()] })
+          };
+          const [mappingResponse, nistResponse] = await Promise.all([
+            fetch(`${API_BASE}/threat-ttps/malware/mapping`, request),
+            fetch(`${API_BASE}/threat-ttps/malware/nist-controls`, request)
+          ]);
+          if (!mappingResponse.ok || !nistResponse.ok) {
+            throw new Error(`Request failed (${mappingResponse.status}/${nistResponse.status}).`);
+          }
+          const [mappingData, nistData] = await Promise.all([mappingResponse.json(), nistResponse.json()]);
+          state.hidden = true;
+          renderTtpResults(mappingData);
+          renderD3fendResults(mappingData);
+          renderNistResults(nistData);
+        } catch (error) {
+          state.hidden = false;
+          state.classList.add('error');
+          state.innerHTML = `<h2>Could not load mappings</h2><p>${error.message}</p>`;
+        } finally {
+          state.classList.remove('error');
+          showButton.textContent = 'Show Mapping';
+          showButton.disabled = selected.size === 0;
+        }
+      }
+
+      search.addEventListener('input', () => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(searchMalware, 250);
+      });
+      search.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && searchResults[0]) {
+          event.preventDefault();
+          selectMalware(searchResults[0]);
+        }
+      });
+      search.addEventListener('blur', () => window.setTimeout(hideSuggestions, 150));
+      showButton.addEventListener('click', loadMappings);
+      clearButton.addEventListener('click', () => { selected.clear(); renderSelected(); hideSuggestions(); ttpResults.replaceChildren(); d3fendResults.replaceChildren(); nistResults.replaceChildren(); state.hidden = false; });
+      renderSelected();
+    </script>
+  </body>
+</html>
