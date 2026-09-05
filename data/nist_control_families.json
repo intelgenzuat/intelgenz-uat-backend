@@ -1,0 +1,25 @@
+{
+  "catalog": "NIST SP 800-53 Rev. 5",
+  "families": {
+    "AC": "Access Control",
+    "IA": "Identification and Authentication",
+    "AT": "Awareness and Training",
+    "PS": "Personnel Security",
+    "AU": "Audit and Accountability",
+    "CA": "Assessment, Authorization, and Monitoring",
+    "RA": "Risk Assessment",
+    "CM": "Configuration Management",
+    "MA": "Maintenance",
+    "CP": "Contingency Planning",
+    "IR": "Incident Response",
+    "MP": "Media Protection",
+    "PE": "Physical and Environmental Protection",
+    "PL": "Planning",
+    "PM": "Program Management",
+    "PT": "Personally Identifiable Information Processing and Transparency",
+    "SA": "System and Services Acquisition",
+    "SR": "Supply Chain Risk Management",
+    "SC": "System and Communications Protection",
+    "SI": "System and Information Integrity"
+  }
+}

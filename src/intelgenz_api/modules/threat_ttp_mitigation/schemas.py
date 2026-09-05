@@ -76,12 +76,6 @@ class MalwareDefenseResponse(BaseModel):
     d3fend_tactics: list[D3fendTacticMapping]
 
 
-class MalwareTtpDefenseMappingResponse(BaseModel):
-    selected_malware_count: int
-    tactics: list[TacticTechniqueMapping]
-    d3fend_tactics: list[D3fendTacticMapping]
-
-
 class NistD3fendSource(BaseModel):
     d3fend_id: str
     name: str
@@ -101,7 +95,15 @@ class NistControlMappingItem(BaseModel):
 
 class NistControlFamilyMapping(BaseModel):
     family_id: str
+    family_name: str
     controls: list[NistControlMappingItem]
+
+
+class MalwareTtpDefenseMappingResponse(BaseModel):
+    selected_malware_count: int
+    tactics: list[TacticTechniqueMapping]
+    d3fend_tactics: list[D3fendTacticMapping]
+    nist_control_families: list[NistControlFamilyMapping]
 
 
 class MalwareNistResponse(BaseModel):

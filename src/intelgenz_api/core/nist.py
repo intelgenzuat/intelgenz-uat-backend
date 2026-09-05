@@ -53,3 +53,21 @@ def get_d3fend_nist_index() -> dict[str, tuple[NistControlMapping, ...]]:
         name: tuple(sorted(items, key=lambda item: item.control_id))
         for name, items in mappings.items()
     }
+
+
+@lru_cache
+def get_nist_control_family_index() -> dict[str, str]:
+    """Return full NIST SP 800-53 Rev. 5 family names indexed by code."""
+    payload = json.loads(settings.nist_control_families_path.read_text(encoding="utf-8"))
+    families = payload.get("families")
+    if not isinstance(families, dict):
+        raise ValueError("NIST control-family data does not contain a families object.")
+
+    family_index = {
+        code: name
+        for code, name in families.items()
+        if isinstance(code, str) and isinstance(name, str)
+    }
+    if not family_index:
+        raise ValueError("NIST control-family data does not contain valid family names.")
+    return family_index

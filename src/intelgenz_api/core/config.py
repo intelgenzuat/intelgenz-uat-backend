@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     mitre_attack_data_path: Path = Path("data/mitre_attack.json")
     attack_d3fend_mappings_path: Path = Path("data/attack_d3fend_mappings.json")
     d3fend_nist_mappings_path: Path = Path("data/d3fend_nist_800_53_rev5.json")
+    nist_control_families_path: Path = Path("data/nist_control_families.json")
     database_url: str | None = None
     database_host: str | None = Field(
         default=None,
