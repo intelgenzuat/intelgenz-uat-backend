@@ -1,5 +1,5 @@
 -- Threat-actor CTI schema for PostgreSQL / Cloud SQL.
--- Mirrors the 27 worksheets produced by export_threat_actor_tables.py.
+-- Mirrors the 28 worksheets produced by export_threat_actor_tables.py.
 -- Confidence, sources, and references are intentionally not stored.
 
 SET search_path TO public;
@@ -19,7 +19,16 @@ CREATE TABLE IF NOT EXISTS threat_actor (
 CREATE TABLE IF NOT EXISTS ta_alias (
     ta_alias_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     actor_id BIGINT NOT NULL REFERENCES threat_actor(actor_id) ON DELETE CASCADE,
-    alias_name TEXT, evidence TEXT
+    alias_name TEXT,
+    alias_type TEXT,
+    evidence TEXT
+);
+CREATE TABLE IF NOT EXISTS ta_identifier (
+    ta_identifier_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    actor_id BIGINT NOT NULL REFERENCES threat_actor(actor_id) ON DELETE CASCADE,
+    identifier_value TEXT,
+    identifier_type TEXT,
+    evidence TEXT
 );
 CREATE TABLE IF NOT EXISTS ta_similar_name (
     ta_similar_name_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -115,7 +124,13 @@ CREATE TABLE IF NOT EXISTS ta_actor_relationship (
 CREATE TABLE IF NOT EXISTS ta_tracking_identity (
     ta_tracking_identity_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     actor_id BIGINT NOT NULL REFERENCES threat_actor(actor_id) ON DELETE CASCADE,
-    tracking_identity_name TEXT, relationship TEXT, vendor TEXT, scope_difference TEXT, why_not_alias TEXT, evidence TEXT
+    tracking_identity_name TEXT,
+    identity_classification TEXT,
+    relationship TEXT,
+    vendor TEXT,
+    scope_difference TEXT,
+    why_not_alias TEXT,
+    evidence TEXT
 );
 CREATE TABLE IF NOT EXISTS ta_malware_relationship (
     ta_malware_relationship_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -154,6 +169,11 @@ CREATE TABLE IF NOT EXISTS ta_indicator (
     indicator_type TEXT, indicator_value TEXT, hash_algorithm TEXT, role TEXT, context TEXT,
     lifecycle_status TEXT, first_seen TEXT, last_seen TEXT, campaign TEXT, evidence TEXT
 );
+
+-- Existing databases may have been created before these v2 source fields
+-- were introduced. Keep the schema upgrade idempotent.
+ALTER TABLE ta_alias ADD COLUMN IF NOT EXISTS alias_type TEXT;
+ALTER TABLE ta_tracking_identity ADD COLUMN IF NOT EXISTS identity_classification TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_threat_actor_canonical_name ON threat_actor(canonical_name);
 CREATE INDEX IF NOT EXISTS idx_threat_actor_pending_kg ON threat_actor(ingested_to_kg) WHERE ingested_to_kg = 0;
