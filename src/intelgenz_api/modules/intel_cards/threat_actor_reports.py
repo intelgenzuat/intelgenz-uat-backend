@@ -34,6 +34,10 @@ from intelgenz_api.modules.intel_cards.schemas import (
     ThreatActorCardVulnerability,
     ThreatActorIntelCard,
     ThreatActorIntelCardPage,
+    ThreatActorRadiusIntelCard,
+    ThreatActorRadiusIntelCardResponse,
+    ThreatActorRadiusRange,
+    ThreatActorRadiusSeverity,
 )
 
 router = APIRouter(tags=["intel cards"])
@@ -54,6 +58,42 @@ THREAT_ACTOR_CARD_PAGE_QUERY = text("""
     LIMIT :limit OFFSET :offset
 """)
 THREAT_ACTOR_CARD_COUNT_QUERY = text("SELECT COUNT(*) FROM public.threat_actor")
+
+THREAT_ACTOR_RADIUS_QUERY = text("""
+    SELECT
+        threat_actor.actor_id,
+        threat_actor.canonical_name,
+        threat_actor.entity_classification,
+        threat_actor.actor_status,
+        threat_actor.sophistication,
+        threat_actor.resource_level,
+        threat_actor.first_seen,
+        threat_actor.last_seen,
+        threat_actor.last_seen_raw,
+        threat_actor_client_radius.client_name,
+        threat_actor_client_radius.radius
+    FROM public.threat_actor_client_radius
+    JOIN public.threat_actor
+        ON threat_actor.actor_id = threat_actor_client_radius.actor_id
+    WHERE LOWER(threat_actor_client_radius.client_name) = LOWER(:client_name)
+      AND threat_actor_client_radius.radius >= :minimum_radius
+      AND (
+          threat_actor_client_radius.radius < :maximum_radius
+          OR (
+              :maximum_inclusive
+              AND threat_actor_client_radius.radius <= :maximum_radius
+          )
+      )
+    ORDER BY threat_actor_client_radius.radius, threat_actor.canonical_name, threat_actor.actor_id
+""")
+
+RADIUS_RANGES: dict[ThreatActorRadiusSeverity, tuple[float, float, bool]] = {
+    ThreatActorRadiusSeverity.critical: (0, 1, False),
+    ThreatActorRadiusSeverity.high: (1, 2, False),
+    ThreatActorRadiusSeverity.moderate: (2, 3, False),
+    ThreatActorRadiusSeverity.low: (3, 4, False),
+    ThreatActorRadiusSeverity.minimal: (4, 5, True),
+}
 
 ALIASES_QUERY = text("""
     SELECT actor_id, alias_name
@@ -260,27 +300,95 @@ def _confirmed_paths(
     ]
 
 
-@router.get("/threat-actor-reports", response_model=ThreatActorIntelCardPage)
+@router.get(
+    "/threat-actor-reports",
+    response_model=ThreatActorIntelCardPage,
+)
 async def list_threat_actor_intel_cards(
     session: Annotated[AsyncSession, Depends(get_database_session)],
     page: Annotated[int, Query(ge=1, description="One-based page number.")] = 1,
 ) -> ThreatActorIntelCardPage:
     """Return nine complete threat-actor intelligence cards per page."""
-    try:
-        total_items = (await session.execute(THREAT_ACTOR_CARD_COUNT_QUERY)).scalar_one()
-        total_pages = ceil(total_items / MALWARE_CARDS_PER_PAGE) if total_items else 0
-        if total_pages and page > total_pages:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Page {page} does not exist. The last available page is {total_pages}.",
+    response = await get_threat_actor_intel_cards(session=session, page=page)
+    if isinstance(response, ThreatActorRadiusIntelCardResponse):
+        raise RuntimeError("The paginated Intel Card endpoint returned a radius response.")
+    return response
+
+
+async def get_threat_actor_intel_cards(
+    session: AsyncSession,
+    page: int = 1,
+    client_name: Annotated[
+        str | None,
+        Query(description="Client profile name. Required when severity is provided."),
+    ] = None,
+    severity: Annotated[
+        ThreatActorRadiusSeverity | None,
+        Query(
+            description=(
+                "Radius band. Returns every matching complete actor card without pagination."
             )
-        result = await session.execute(
-            THREAT_ACTOR_CARD_PAGE_QUERY,
-            {"limit": MALWARE_CARDS_PER_PAGE, "offset": (page - 1) * MALWARE_CARDS_PER_PAGE},
+        ),
+    ] = None,
+) -> ThreatActorIntelCardPage | ThreatActorRadiusIntelCardResponse:
+    """Build paginated cards or all complete cards for a client severity band."""
+    has_radius_filter = client_name is not None or severity is not None
+    normalized_client_name = client_name.strip() if client_name else None
+    if has_radius_filter and (not normalized_client_name or severity is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="client_name and severity must be provided together.",
         )
-        main_rows = [dict(row) for row in result.mappings()]
+
+    radius_range: ThreatActorRadiusRange | None = None
+    try:
+        if has_radius_filter:
+            assert normalized_client_name is not None
+            assert severity is not None
+            minimum_radius, maximum_radius, maximum_inclusive = RADIUS_RANGES[severity]
+            radius_range = ThreatActorRadiusRange(
+                minimum=minimum_radius,
+                maximum=maximum_radius,
+                maximum_inclusive=maximum_inclusive,
+            )
+            result = await session.execute(
+                THREAT_ACTOR_RADIUS_QUERY,
+                {
+                    "client_name": normalized_client_name,
+                    "minimum_radius": minimum_radius,
+                    "maximum_radius": maximum_radius,
+                    "maximum_inclusive": maximum_inclusive,
+                },
+            )
+            main_rows = [dict(row) for row in result.mappings()]
+            total_items = len(main_rows)
+            total_pages = 0
+        else:
+            total_items = (await session.execute(THREAT_ACTOR_CARD_COUNT_QUERY)).scalar_one()
+            total_pages = ceil(total_items / MALWARE_CARDS_PER_PAGE) if total_items else 0
+            if total_pages and page > total_pages:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Page {page} does not exist. The last available page is {total_pages}.",
+                )
+            result = await session.execute(
+                THREAT_ACTOR_CARD_PAGE_QUERY,
+                {"limit": MALWARE_CARDS_PER_PAGE, "offset": (page - 1) * MALWARE_CARDS_PER_PAGE},
+            )
+            main_rows = [dict(row) for row in result.mappings()]
         actor_ids = [row["actor_id"] for row in main_rows if isinstance(row.get("actor_id"), int)]
         if not actor_ids:
+            if has_radius_filter:
+                assert normalized_client_name is not None
+                assert severity is not None
+                assert radius_range is not None
+                return ThreatActorRadiusIntelCardResponse(
+                    client_name=normalized_client_name,
+                    severity=severity,
+                    radius_range=radius_range,
+                    total_items=0,
+                    items=[],
+                )
             return ThreatActorIntelCardPage(
                 pagination=MalwareCardPagination(
                     page=page,
@@ -484,6 +592,31 @@ async def list_threat_actor_intel_cards(
                     if _as_str(item.get("indicator_value"))
                 ],
             )
+        )
+
+    if has_radius_filter:
+        assert normalized_client_name is not None
+        assert severity is not None
+        assert radius_range is not None
+        radius_by_actor = {
+            row["actor_id"]: float(row["radius"])
+            for row in main_rows
+            if isinstance(row.get("actor_id"), int) and row.get("radius") is not None
+        }
+        return ThreatActorRadiusIntelCardResponse(
+            client_name=normalized_client_name,
+            severity=severity,
+            radius_range=radius_range,
+            total_items=len(items),
+            items=[
+                ThreatActorRadiusIntelCard(
+                    **item.model_dump(),
+                    client_name=normalized_client_name,
+                    radius=radius_by_actor[item.actor_id],
+                    severity=severity,
+                )
+                for item in items
+            ],
         )
 
     return ThreatActorIntelCardPage(

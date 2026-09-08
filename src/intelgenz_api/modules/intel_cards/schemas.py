@@ -1,3 +1,5 @@
+from enum import StrEnum
+
 from pydantic import BaseModel
 
 
@@ -278,3 +280,31 @@ class ThreatActorIntelCard(BaseModel):
 class ThreatActorIntelCardPage(BaseModel):
     pagination: MalwareCardPagination
     items: list[ThreatActorIntelCard]
+
+
+class ThreatActorRadiusSeverity(StrEnum):
+    critical = "critical"
+    high = "high"
+    moderate = "moderate"
+    low = "low"
+    minimal = "minimal"
+
+
+class ThreatActorRadiusRange(BaseModel):
+    minimum: float
+    maximum: float
+    maximum_inclusive: bool
+
+
+class ThreatActorRadiusIntelCard(ThreatActorIntelCard):
+    client_name: str
+    radius: float
+    severity: ThreatActorRadiusSeverity
+
+
+class ThreatActorRadiusIntelCardResponse(BaseModel):
+    client_name: str
+    severity: ThreatActorRadiusSeverity
+    radius_range: ThreatActorRadiusRange
+    total_items: int
+    items: list[ThreatActorRadiusIntelCard]
