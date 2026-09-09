@@ -2,21 +2,17 @@
 
 from pydantic import BaseModel
 
-from intelgenz_api.modules.intel_cards.schemas import (
-    ThreatActorRadiusRange,
-    ThreatActorRadiusSeverity,
-)
+from intelgenz_api.modules.intel_cards.schemas import ThreatActorRadiusSeverity
 
 
 class ThreatActorRadiusDistributionItem(BaseModel):
     actor_id: int
     name: str
     radius: float
+    severity: ThreatActorRadiusSeverity
 
 
 class ThreatActorRadiusDistributionResponse(BaseModel):
     client_name: str
-    severity: ThreatActorRadiusSeverity
-    radius_range: ThreatActorRadiusRange
     total_items: int
     items: list[ThreatActorRadiusDistributionItem]
