@@ -132,6 +132,34 @@ class MalwareIntelCardPage(BaseModel):
     items: list[MalwareIntelCard]
 
 
+class MalwareIntelCardListPlatform(BaseModel):
+    platform: str
+
+
+class MalwareIntelCardListSummary(BaseModel):
+    malware_type: str | None
+    affected_platforms: list[MalwareIntelCardListPlatform]
+    affected_platforms_remaining_count: int
+    secondary_capabilities: list[str]
+    secondary_capabilities_remaining_count: int
+
+
+class MalwareIntelCardListTimelineItem(BaseModel):
+    date: str
+
+
+class MalwareIntelCardListItem(BaseModel):
+    malware_id: int
+    name: str
+    summary: MalwareIntelCardListSummary
+    activity_timeline: list[MalwareIntelCardListTimelineItem]
+
+
+class MalwareIntelCardListPage(BaseModel):
+    pagination: MalwareCardPagination
+    items: list[MalwareIntelCardListItem]
+
+
 class ThreatActorCardNexus(BaseModel):
     country_or_region: str | None
     relationship: str | None
@@ -280,6 +308,38 @@ class ThreatActorIntelCard(BaseModel):
 class ThreatActorIntelCardPage(BaseModel):
     pagination: MalwareCardPagination
     items: list[ThreatActorIntelCard]
+
+
+class ThreatActorIntelCardListNexus(BaseModel):
+    country_or_region: str
+
+
+class ThreatActorIntelCardListTargeting(BaseModel):
+    regions: list[str]
+    regions_remaining_count: int
+    sectors: list[str]
+    sectors_remaining_count: int
+
+
+class ThreatActorIntelCardListSummary(BaseModel):
+    status: str | None
+    actor_types: list[str]
+    actor_types_remaining_count: int
+    nexus: list[ThreatActorIntelCardListNexus]
+    nexus_remaining_count: int
+    targeting: list[ThreatActorIntelCardListTargeting]
+    last_seen: ThreatActorCardLastSeen
+
+
+class ThreatActorIntelCardListItem(BaseModel):
+    actor_id: int
+    name: str
+    summary: ThreatActorIntelCardListSummary
+
+
+class ThreatActorIntelCardListPage(BaseModel):
+    pagination: MalwareCardPagination
+    items: list[ThreatActorIntelCardListItem]
 
 
 class ThreatActorRadiusSeverity(StrEnum):

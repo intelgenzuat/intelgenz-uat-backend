@@ -33,6 +33,11 @@ from intelgenz_api.modules.intel_cards.schemas import (
     ThreatActorCardTtp,
     ThreatActorCardVulnerability,
     ThreatActorIntelCard,
+    ThreatActorIntelCardListItem,
+    ThreatActorIntelCardListNexus,
+    ThreatActorIntelCardListPage,
+    ThreatActorIntelCardListSummary,
+    ThreatActorIntelCardListTargeting,
     ThreatActorIntelCardPage,
     ThreatActorRadiusIntelCard,
     ThreatActorRadiusIntelCardResponse,
@@ -58,6 +63,28 @@ THREAT_ACTOR_CARD_PAGE_QUERY = text("""
     LIMIT :limit OFFSET :offset
 """)
 THREAT_ACTOR_CARD_COUNT_QUERY = text("SELECT COUNT(*) FROM public.threat_actor")
+
+THREAT_ACTOR_CARD_SUMMARY_PAGE_QUERY = text("""
+    SELECT actor_id, canonical_name, actor_status, last_seen, last_seen_raw
+    FROM public.threat_actor
+    ORDER BY canonical_name, actor_id
+    LIMIT :limit OFFSET :offset
+""")
+
+THREAT_ACTOR_CARD_DETAIL_QUERY = text("""
+    SELECT
+        actor_id,
+        canonical_name,
+        entity_classification,
+        actor_status,
+        sophistication,
+        resource_level,
+        first_seen,
+        last_seen,
+        last_seen_raw
+    FROM public.threat_actor
+    WHERE actor_id = :actor_id
+""")
 
 THREAT_ACTOR_RADIUS_QUERY = text("""
     SELECT
@@ -262,6 +289,12 @@ def _unique_values(rows: list[dict[str, Any]], key: str) -> list[str]:
     return list(dict.fromkeys(value for row in rows if (value := _as_str(row.get(key)))))
 
 
+def _display_values(rows: list[dict[str, Any]], key: str) -> tuple[list[str], int]:
+    """Return up to three unique values plus the number omitted from a card."""
+    values = _unique_values(rows, key)
+    return values[:3], max(0, len(values) - 3)
+
+
 def _execution_step(row: dict[str, Any]) -> ThreatActorCardExecutionStep:
     action = _as_str(row.get("action"))
     step = row.get("step")
@@ -302,22 +335,113 @@ def _confirmed_paths(
 
 @router.get(
     "/threat-actor-reports",
-    response_model=ThreatActorIntelCardPage,
+    response_model=ThreatActorIntelCardListPage,
 )
 async def list_threat_actor_intel_cards(
     session: Annotated[AsyncSession, Depends(get_database_session)],
     page: Annotated[int, Query(ge=1, description="One-based page number.")] = 1,
-) -> ThreatActorIntelCardPage:
-    """Return nine complete threat-actor intelligence cards per page."""
-    response = await get_threat_actor_intel_cards(session=session, page=page)
-    if isinstance(response, ThreatActorRadiusIntelCardResponse):
-        raise RuntimeError("The paginated Intel Card endpoint returned a radius response.")
-    return response
+) -> ThreatActorIntelCardListPage:
+    """Return nine lightweight threat-actor cards for the initial Intel Card grid."""
+    try:
+        total_items = (await session.execute(THREAT_ACTOR_CARD_COUNT_QUERY)).scalar_one()
+        total_pages = ceil(total_items / MALWARE_CARDS_PER_PAGE) if total_items else 0
+        if total_pages and page > total_pages:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Page {page} does not exist. The last available page is {total_pages}.",
+            )
+        result = await session.execute(
+            THREAT_ACTOR_CARD_SUMMARY_PAGE_QUERY,
+            {"limit": MALWARE_CARDS_PER_PAGE, "offset": (page - 1) * MALWARE_CARDS_PER_PAGE},
+        )
+        main_rows = [dict(row) for row in result.mappings()]
+        actor_ids = [row["actor_id"] for row in main_rows if isinstance(row.get("actor_id"), int)]
+        if not actor_ids:
+            return ThreatActorIntelCardListPage(
+                pagination=MalwareCardPagination(
+                    page=page,
+                    page_size=MALWARE_CARDS_PER_PAGE,
+                    total_items=total_items,
+                    total_pages=total_pages,
+                ),
+                items=[],
+            )
+        actor_type_rows = _rows_by_actor(await _fetch_rows(session, ACTOR_TYPES_QUERY, actor_ids))
+        nexus_rows = _rows_by_actor(await _fetch_rows(session, NEXUS_QUERY, actor_ids))
+        targeting_rows = _rows_by_actor(await _fetch_rows(session, TARGETING_QUERY, actor_ids))
+    except HTTPException:
+        raise
+    except (OSError, SQLAlchemyError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Threat-actor Intel Cards are temporarily unavailable.",
+        ) from error
+
+    items: list[ThreatActorIntelCardListItem] = []
+    for row in main_rows:
+        actor_id = row.get("actor_id")
+        name = _as_str(row.get("canonical_name"))
+        if not isinstance(actor_id, int) or not name:
+            continue
+        actor_types, actor_types_remaining_count = _display_values(
+            actor_type_rows[actor_id], "actor_type"
+        )
+        nexus_locations, nexus_remaining_count = _display_values(
+            nexus_rows[actor_id], "country_or_region"
+        )
+        regions, regions_remaining_count = _display_values(targeting_rows[actor_id], "region")
+        sectors, sectors_remaining_count = _display_values(targeting_rows[actor_id], "sector")
+        last_seen_date = _as_str(row.get("last_seen"))
+        items.append(
+            ThreatActorIntelCardListItem(
+                actor_id=actor_id,
+                name=name,
+                summary=ThreatActorIntelCardListSummary(
+                    status=_as_str(row.get("actor_status")),
+                    actor_types=actor_types,
+                    actor_types_remaining_count=actor_types_remaining_count,
+                    nexus=[
+                        ThreatActorIntelCardListNexus(country_or_region=location)
+                        for location in nexus_locations
+                    ],
+                    nexus_remaining_count=nexus_remaining_count,
+                    targeting=(
+                        [
+                            ThreatActorIntelCardListTargeting(
+                                regions=regions,
+                                regions_remaining_count=regions_remaining_count,
+                                sectors=sectors,
+                                sectors_remaining_count=sectors_remaining_count,
+                            )
+                        ]
+                        if regions or sectors
+                        else []
+                    ),
+                    last_seen=ThreatActorCardLastSeen(
+                        date=last_seen_date,
+                        raw_value=(
+                            None if last_seen_date else _as_str(row.get("last_seen_raw"))
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    return ThreatActorIntelCardListPage(
+        pagination=MalwareCardPagination(
+            page=page,
+            page_size=MALWARE_CARDS_PER_PAGE,
+            total_items=total_items,
+            total_pages=total_pages,
+        ),
+        items=items,
+    )
 
 
 async def get_threat_actor_intel_cards(
     session: AsyncSession,
     page: int = 1,
+    actor_id: int | None = None,
     client_name: Annotated[
         str | None,
         Query(description="Client profile name. Required when severity is provided."),
@@ -333,6 +457,8 @@ async def get_threat_actor_intel_cards(
 ) -> ThreatActorIntelCardPage | ThreatActorRadiusIntelCardResponse:
     """Build paginated cards or all complete cards for a client severity band."""
     has_radius_filter = client_name is not None or severity is not None
+    if actor_id is not None and has_radius_filter:
+        raise ValueError("actor_id cannot be combined with a client radius filter.")
     normalized_client_name = client_name.strip() if client_name else None
     if has_radius_filter and (not normalized_client_name or severity is None):
         raise HTTPException(
@@ -342,7 +468,17 @@ async def get_threat_actor_intel_cards(
 
     radius_range: ThreatActorRadiusRange | None = None
     try:
-        if has_radius_filter:
+        if actor_id is not None:
+            result = await session.execute(THREAT_ACTOR_CARD_DETAIL_QUERY, {"actor_id": actor_id})
+            main_rows = [dict(row) for row in result.mappings()]
+            if not main_rows:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Threat actor {actor_id} does not exist.",
+                )
+            total_items = 1
+            total_pages = 1
+        elif has_radius_filter:
             assert normalized_client_name is not None
             assert severity is not None
             minimum_radius, maximum_radius, maximum_inclusive = RADIUS_RANGES[severity]
@@ -628,3 +764,15 @@ async def get_threat_actor_intel_cards(
         ),
         items=items,
     )
+
+
+@router.get("/threat-actor-reports/{actor_id}", response_model=ThreatActorIntelCard)
+async def get_threat_actor_intel_card_report(
+    actor_id: int,
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> ThreatActorIntelCard:
+    """Return the complete threat-actor report when a user selects View Report."""
+    response = await get_threat_actor_intel_cards(session=session, actor_id=actor_id)
+    if isinstance(response, ThreatActorRadiusIntelCardResponse) or not response.items:
+        raise RuntimeError("The threat-actor detail endpoint returned an unexpected response.")
+    return response.items[0]
