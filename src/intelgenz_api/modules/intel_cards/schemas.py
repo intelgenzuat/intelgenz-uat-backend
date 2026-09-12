@@ -342,6 +342,14 @@ class ThreatActorIntelCardListPage(BaseModel):
     items: list[ThreatActorIntelCardListItem]
 
 
+class ThreatActorCioCuration(StrEnum):
+    all_view = "All View"
+    priority_actor = "Priority Actor"
+    relevant_actor = "Relevant Actor"
+    watch_actor = "Watch Actor"
+    low_relevance = "Low Relevance"
+
+
 class ThreatActorRadiusSeverity(StrEnum):
     critical = "critical"
     high = "high"

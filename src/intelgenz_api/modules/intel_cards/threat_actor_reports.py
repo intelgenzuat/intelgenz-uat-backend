@@ -32,6 +32,7 @@ from intelgenz_api.modules.intel_cards.schemas import (
     ThreatActorCardTimelineItem,
     ThreatActorCardTtp,
     ThreatActorCardVulnerability,
+    ThreatActorCioCuration,
     ThreatActorIntelCard,
     ThreatActorIntelCardListItem,
     ThreatActorIntelCardListNexus,
@@ -64,10 +65,54 @@ THREAT_ACTOR_CARD_PAGE_QUERY = text("""
 """)
 THREAT_ACTOR_CARD_COUNT_QUERY = text("SELECT COUNT(*) FROM public.threat_actor")
 
+THREAT_ACTOR_CLIENT_CARD_COUNT_QUERY = text("""
+    SELECT COUNT(*)
+    FROM public.threat_actor_cio_curation_summary
+    WHERE client_name = :client_name
+""")
+
+THREAT_ACTOR_CLIENT_CURATION_CARD_COUNT_QUERY = text("""
+    SELECT COUNT(*)
+    FROM public.threat_actor_cio_curation_summary
+    WHERE client_name = :client_name
+      AND curation = :curation
+""")
+
 THREAT_ACTOR_CARD_SUMMARY_PAGE_QUERY = text("""
     SELECT actor_id, canonical_name, actor_status, last_seen, last_seen_raw
     FROM public.threat_actor
     ORDER BY canonical_name, actor_id
+    LIMIT :limit OFFSET :offset
+""")
+
+THREAT_ACTOR_CLIENT_CARD_SUMMARY_PAGE_QUERY = text("""
+    SELECT
+        threat_actor.actor_id,
+        threat_actor.canonical_name,
+        threat_actor.actor_status,
+        threat_actor.last_seen,
+        threat_actor.last_seen_raw
+    FROM public.threat_actor_cio_curation_summary
+    JOIN public.threat_actor
+        ON threat_actor.actor_id = threat_actor_cio_curation_summary.actor_id
+    WHERE threat_actor_cio_curation_summary.client_name = :client_name
+    ORDER BY threat_actor.canonical_name, threat_actor.actor_id
+    LIMIT :limit OFFSET :offset
+""")
+
+THREAT_ACTOR_CLIENT_CURATION_CARD_SUMMARY_PAGE_QUERY = text("""
+    SELECT
+        threat_actor.actor_id,
+        threat_actor.canonical_name,
+        threat_actor.actor_status,
+        threat_actor.last_seen,
+        threat_actor.last_seen_raw
+    FROM public.threat_actor_cio_curation_summary
+    JOIN public.threat_actor
+        ON threat_actor.actor_id = threat_actor_cio_curation_summary.actor_id
+    WHERE threat_actor_cio_curation_summary.client_name = :client_name
+      AND threat_actor_cio_curation_summary.curation = :curation
+    ORDER BY threat_actor.canonical_name, threat_actor.actor_id
     LIMIT :limit OFFSET :offset
 """)
 
@@ -340,10 +385,58 @@ def _confirmed_paths(
 async def list_threat_actor_intel_cards(
     session: Annotated[AsyncSession, Depends(get_database_session)],
     page: Annotated[int, Query(ge=1, description="One-based page number.")] = 1,
+    client_name: Annotated[
+        str | None,
+        Query(max_length=200, description="Client profile name used for CIO curation filtering."),
+    ] = None,
+    curation: Annotated[
+        ThreatActorCioCuration | None,
+        Query(description="CIO curation category. All View is the default."),
+    ] = None,
 ) -> ThreatActorIntelCardListPage:
     """Return nine lightweight threat-actor cards for the initial Intel Card grid."""
+    normalized_client_name = client_name.strip().upper() if client_name else None
+    if client_name is not None and not normalized_client_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="client_name must contain at least one non-space character.",
+        )
+    selected_curation = (
+        curation.value
+        if curation is not None and curation is not ThreatActorCioCuration.all_view
+        else None
+    )
+    if selected_curation is not None and normalized_client_name is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="client_name is required when filtering by curation.",
+        )
+
     try:
-        total_items = (await session.execute(THREAT_ACTOR_CARD_COUNT_QUERY)).scalar_one()
+        query_parameters: dict[str, int | str] = {
+            "limit": MALWARE_CARDS_PER_PAGE,
+            "offset": (page - 1) * MALWARE_CARDS_PER_PAGE,
+        }
+        if selected_curation is not None:
+            assert normalized_client_name is not None
+            query_parameters.update(
+                {"client_name": normalized_client_name, "curation": selected_curation}
+            )
+            total_items = (
+                await session.execute(
+                    THREAT_ACTOR_CLIENT_CURATION_CARD_COUNT_QUERY, query_parameters
+                )
+            ).scalar_one()
+            page_query = THREAT_ACTOR_CLIENT_CURATION_CARD_SUMMARY_PAGE_QUERY
+        elif normalized_client_name is not None:
+            query_parameters.update({"client_name": normalized_client_name})
+            total_items = (
+                await session.execute(THREAT_ACTOR_CLIENT_CARD_COUNT_QUERY, query_parameters)
+            ).scalar_one()
+            page_query = THREAT_ACTOR_CLIENT_CARD_SUMMARY_PAGE_QUERY
+        else:
+            total_items = (await session.execute(THREAT_ACTOR_CARD_COUNT_QUERY)).scalar_one()
+            page_query = THREAT_ACTOR_CARD_SUMMARY_PAGE_QUERY
         total_pages = ceil(total_items / MALWARE_CARDS_PER_PAGE) if total_items else 0
         if total_pages and page > total_pages:
             raise HTTPException(
@@ -351,8 +444,8 @@ async def list_threat_actor_intel_cards(
                 detail=f"Page {page} does not exist. The last available page is {total_pages}.",
             )
         result = await session.execute(
-            THREAT_ACTOR_CARD_SUMMARY_PAGE_QUERY,
-            {"limit": MALWARE_CARDS_PER_PAGE, "offset": (page - 1) * MALWARE_CARDS_PER_PAGE},
+            page_query,
+            query_parameters,
         )
         main_rows = [dict(row) for row in result.mappings()]
         actor_ids = [row["actor_id"] for row in main_rows if isinstance(row.get("actor_id"), int)]
