@@ -1,6 +1,7 @@
 """Threat-actor discovery and ATT&CK mapping endpoints."""
 
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Annotated
@@ -26,6 +27,8 @@ from intelgenz_api.modules.threat_actor_profiling.schemas import (
     ThreatActorSearchItem,
     ThreatActorSearchResponse,
     ThreatActorTacticTechniqueMapping,
+    ThreatActorTechniqueCioItem,
+    ThreatActorTechniqueCioResponse,
     ThreatActorTechniqueMappingItem,
     ThreatActorUsingTechnique,
 )
@@ -79,6 +82,36 @@ THREAT_ACTOR_TECHNIQUE_QUERY = text("""
     ORDER BY selected_actors.position, ta_mitre_attack.technique_id
 """)
 
+THREAT_ACTOR_ALL_TECHNIQUES_CIO_QUERY = text("""
+    WITH requested_techniques AS (
+        SELECT DISTINCT technique_id
+        FROM unnest(CAST(:technique_ids AS TEXT[])) AS requested(technique_id)
+    ),
+    matched_actors AS (
+        SELECT ta_mitre_attack.actor_id
+        FROM public.ta_mitre_attack
+        JOIN requested_techniques
+            ON requested_techniques.technique_id = ta_mitre_attack.technique_id
+        GROUP BY ta_mitre_attack.actor_id
+        HAVING COUNT(DISTINCT ta_mitre_attack.technique_id) = :technique_count
+    )
+    SELECT
+        threat_actor.actor_id,
+        threat_actor.canonical_name AS name,
+        LOWER(threat_actor_cio_curation_summary.capability) = 'yes' AS capability,
+        LOWER(threat_actor_cio_curation_summary.intent) = 'yes' AS intent,
+        LOWER(threat_actor_cio_curation_summary.opportunity) = 'yes' AS opportunity
+    FROM matched_actors
+    JOIN public.threat_actor
+        ON threat_actor.actor_id = matched_actors.actor_id
+    JOIN public.threat_actor_cio_curation_summary
+        ON threat_actor_cio_curation_summary.actor_id = matched_actors.actor_id
+       AND threat_actor_cio_curation_summary.client_name = :client_name
+    ORDER BY threat_actor.canonical_name, threat_actor.actor_id
+""")
+
+TECHNIQUE_ID_PATTERN = re.compile(r"^T\d{4}(?:\.\d{3})?$")
+
 D3FEND_TACTIC_ORDER = {
     "Model": 0,
     "Harden": 1,
@@ -111,14 +144,45 @@ class NistControlUsage:
 def _actor_references(actors: dict[int, str]) -> list[ThreatActorUsingTechnique]:
     """Return actor references in the selection order preserved by the query."""
     return [
-        ThreatActorUsingTechnique(actor_id=actor_id, name=name)
-        for actor_id, name in actors.items()
+        ThreatActorUsingTechnique(actor_id=actor_id, name=name) for actor_id, name in actors.items()
     ]
 
 
 def _overlap_percentage(overlap_count: int, selected_actor_count: int) -> int:
     """Treat techniques used by only one selected actor as no overlap."""
     return round(100 * overlap_count / selected_actor_count) if overlap_count > 1 else 0
+
+
+def _parse_technique_ids(technique_ids: str) -> list[str]:
+    """Normalize comma-separated ATT&CK technique IDs while preserving input order."""
+    normalized_ids = list(
+        dict.fromkeys(
+            technique_id.strip().upper()
+            for technique_id in technique_ids.split(",")
+            if technique_id.strip()
+        )
+    )
+    if not normalized_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="technique_ids must contain at least one comma-separated technique ID.",
+        )
+    if len(normalized_ids) > 50:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A maximum of 50 technique IDs is allowed.",
+        )
+    invalid_ids = [
+        technique_id
+        for technique_id in normalized_ids
+        if not TECHNIQUE_ID_PATTERN.fullmatch(technique_id)
+    ]
+    if invalid_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid ATT&CK technique IDs: {', '.join(invalid_ids)}.",
+        )
+    return normalized_ids
 
 
 @router.get("/search", response_model=ThreatActorSearchResponse)
@@ -159,6 +223,64 @@ async def search_threat_actors(
         results=[
             ThreatActorSearchItem(actor_id=row["actor_id"], name=row["name"])
             for row in result.mappings()
+        ],
+    )
+
+
+@router.get("/by-techniques", response_model=ThreatActorTechniqueCioResponse)
+async def find_threat_actors_by_techniques(
+    technique_ids: Annotated[
+        str,
+        Query(
+            min_length=5,
+            max_length=500,
+            description="Comma-separated ATT&CK IDs. Actors must use every supplied technique.",
+        ),
+    ],
+    client_name: Annotated[
+        str,
+        Query(min_length=1, max_length=200, description="Client profile name for CIO assessment."),
+    ],
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> ThreatActorTechniqueCioResponse:
+    """Find client-assessed actors that use every requested ATT&CK technique."""
+    requested_technique_ids = _parse_technique_ids(technique_ids)
+    normalized_client_name = client_name.strip().upper()
+    if not normalized_client_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="client_name must contain at least one non-space character.",
+        )
+    try:
+        result = await session.execute(
+            THREAT_ACTOR_ALL_TECHNIQUES_CIO_QUERY,
+            {
+                "technique_ids": requested_technique_ids,
+                "technique_count": len(requested_technique_ids),
+                "client_name": normalized_client_name,
+            },
+        )
+        rows = list(result.mappings())
+    except (OSError, SQLAlchemyError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Threat actor technique matching is temporarily unavailable.",
+        ) from error
+
+    return ThreatActorTechniqueCioResponse(
+        client_name=normalized_client_name,
+        requested_technique_ids=requested_technique_ids,
+        matched_actor_count=len(rows),
+        actors=[
+            ThreatActorTechniqueCioItem(
+                actor_id=row["actor_id"],
+                name=row["name"],
+                matched_technique_ids=requested_technique_ids,
+                capability=row["capability"],
+                intent=row["intent"],
+                opportunity=row["opportunity"],
+            )
+            for row in rows
         ],
     )
 
@@ -226,9 +348,9 @@ async def get_threat_actor_mapping(
             usage.actors.update(actors)
             usage.actors_by_attack_technique[attack_technique_id].update(actors)
 
-    d3fend_by_tactic: defaultdict[
-        str, list[ThreatActorD3fendTechniqueMappingItem]
-    ] = defaultdict(list)
+    d3fend_by_tactic: defaultdict[str, list[ThreatActorD3fendTechniqueMappingItem]] = defaultdict(
+        list
+    )
     for usage in sorted(d3fend_usage_by_id.values(), key=lambda item: item.context.name):
         attack_techniques = []
         for attack_technique_id, actors in sorted(usage.actors_by_attack_technique.items()):
@@ -278,9 +400,9 @@ async def get_threat_actor_mapping(
                 d3fend_usage.actors.update(actors)
                 d3fend_usage.actors_by_attack_technique[attack_technique_id].update(actors)
 
-    controls_by_family: defaultdict[
-        str, list[ThreatActorNistControlMappingItem]
-    ] = defaultdict(list)
+    controls_by_family: defaultdict[str, list[ThreatActorNistControlMappingItem]] = defaultdict(
+        list
+    )
     for nist_usage in sorted(nist_usage_by_control.values(), key=lambda item: item.control_id):
         family_id = nist_usage.control_id.split("-", maxsplit=1)[0]
         overlap_count = len(nist_usage.actors)

@@ -11,6 +11,22 @@ class ThreatActorSearchResponse(BaseModel):
     results: list[ThreatActorSearchItem]
 
 
+class ThreatActorTechniqueCioItem(BaseModel):
+    actor_id: int
+    name: str
+    matched_technique_ids: list[str]
+    capability: bool
+    intent: bool
+    opportunity: bool
+
+
+class ThreatActorTechniqueCioResponse(BaseModel):
+    client_name: str
+    requested_technique_ids: list[str]
+    matched_actor_count: int
+    actors: list[ThreatActorTechniqueCioItem]
+
+
 class ThreatActorMappingRequest(BaseModel):
     actor_ids: list[int] = Field(min_length=1, max_length=100)
 
