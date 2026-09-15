@@ -16,6 +16,8 @@ from intelgenz_api.core.database import get_database_session
 from intelgenz_api.core.mitre_attack import MitreTechniqueContext, get_mitre_technique_index
 from intelgenz_api.core.nist import get_d3fend_nist_index, get_nist_control_family_index
 from intelgenz_api.modules.threat_actor_profiling.schemas import (
+    TechniqueSearchItem,
+    TechniqueSearchResponse,
     ThreatActorAttackTechniqueDefenseSource,
     ThreatActorD3fendTacticMapping,
     ThreatActorD3fendTechniqueMappingItem,
@@ -33,7 +35,7 @@ from intelgenz_api.modules.threat_actor_profiling.schemas import (
     ThreatActorUsingTechnique,
 )
 
-router = APIRouter(tags=["threat actors"])
+router = APIRouter()
 
 THREAT_ACTOR_SEARCH_QUERY = text("""
     SELECT
@@ -60,6 +62,16 @@ THREAT_ACTOR_SEARCH_QUERY = text("""
             ELSE 2
         END,
         threat_actor.canonical_name
+    LIMIT :limit
+""")
+
+MITRE_TECHNIQUE_ID_SEARCH_QUERY = text("""
+    SELECT technique_id, name
+    FROM public.mitre_technique_ids
+    WHERE technique_id LIKE :prefix_query
+    ORDER BY
+        CASE WHEN technique_id = :query THEN 0 ELSE 1 END,
+        technique_id
     LIMIT :limit
 """)
 
@@ -153,19 +165,20 @@ def _overlap_percentage(overlap_count: int, selected_actor_count: int) -> int:
     return round(100 * overlap_count / selected_actor_count) if overlap_count > 1 else 0
 
 
-def _parse_technique_ids(technique_ids: str) -> list[str]:
-    """Normalize comma-separated ATT&CK technique IDs while preserving input order."""
-    normalized_ids = list(
-        dict.fromkeys(
-            technique_id.strip().upper()
-            for technique_id in technique_ids.split(",")
-            if technique_id.strip()
-        )
-    )
+def _parse_technique_ids(technique_ids: list[str]) -> list[str]:
+    """Normalize repeated ATT&CK technique query parameters in input order."""
+    normalized_ids = [
+        technique_id.strip().upper() for technique_id in technique_ids if technique_id.strip()
+    ]
     if not normalized_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="technique_ids must contain at least one comma-separated technique ID.",
+            detail="technique_ids must contain at least one technique ID.",
+        )
+    if len(normalized_ids) != len(set(normalized_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="technique_ids must not contain duplicates.",
         )
     if len(normalized_ids) > 50:
         raise HTTPException(
@@ -185,7 +198,7 @@ def _parse_technique_ids(technique_ids: str) -> list[str]:
     return normalized_ids
 
 
-@router.get("/search", response_model=ThreatActorSearchResponse)
+@router.get("/search", response_model=ThreatActorSearchResponse, tags=["TTP Mitigation"])
 async def search_threat_actors(
     query: Annotated[
         str,
@@ -227,14 +240,64 @@ async def search_threat_actors(
     )
 
 
-@router.get("/by-techniques", response_model=ThreatActorTechniqueCioResponse)
+@router.get(
+    "/techniques/search",
+    response_model=TechniqueSearchResponse,
+    tags=["Threat Actor Profiling"],
+)
+async def search_mitre_technique_ids(
+    query: Annotated[
+        str,
+        Query(min_length=3, max_length=20, description="At least three ID characters."),
+    ],
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> TechniqueSearchResponse:
+    """Return lightweight ATT&CK technique and sub-technique ID suggestions."""
+    normalized_query = query.strip().upper()
+    if len(normalized_query) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Query must contain at least three non-space characters.",
+        )
+
+    try:
+        result = await session.execute(
+            MITRE_TECHNIQUE_ID_SEARCH_QUERY,
+            {
+                "query": normalized_query,
+                "prefix_query": f"{normalized_query}%",
+                "limit": limit,
+            },
+        )
+    except (OSError, SQLAlchemyError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="MITRE technique search is temporarily unavailable.",
+        ) from error
+
+    return TechniqueSearchResponse(
+        items=[
+            TechniqueSearchItem(technique_id=row["technique_id"], name=row["name"])
+            for row in result.mappings()
+        ]
+    )
+
+
+@router.get(
+    "/by-techniques",
+    response_model=ThreatActorTechniqueCioResponse,
+    tags=["Threat Actor Profiling"],
+)
 async def find_threat_actors_by_techniques(
     technique_ids: Annotated[
-        str,
+        list[str],
         Query(
-            min_length=5,
-            max_length=500,
-            description="Comma-separated ATT&CK IDs. Actors must use every supplied technique.",
+            min_length=1,
+            max_length=50,
+            description=(
+                "Repeat technique_ids for each ATT&CK ID. Actors must use every supplied ID."
+            ),
         ),
     ],
     client_name: Annotated[
@@ -285,7 +348,7 @@ async def find_threat_actors_by_techniques(
     )
 
 
-@router.post("/mapping", response_model=ThreatActorMappingResponse)
+@router.post("/mapping", response_model=ThreatActorMappingResponse, tags=["TTP Mitigation"])
 async def get_threat_actor_mapping(
     payload: ThreatActorMappingRequest,
     session: Annotated[AsyncSession, Depends(get_database_session)],

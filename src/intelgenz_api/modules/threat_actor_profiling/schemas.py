@@ -11,6 +11,15 @@ class ThreatActorSearchResponse(BaseModel):
     results: list[ThreatActorSearchItem]
 
 
+class TechniqueSearchItem(BaseModel):
+    technique_id: str
+    name: str
+
+
+class TechniqueSearchResponse(BaseModel):
+    items: list[TechniqueSearchItem]
+
+
 class ThreatActorTechniqueCioItem(BaseModel):
     actor_id: int
     name: str
