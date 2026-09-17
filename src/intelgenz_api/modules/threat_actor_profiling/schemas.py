@@ -20,13 +20,25 @@ class TechniqueSearchResponse(BaseModel):
     items: list[TechniqueSearchItem]
 
 
-class ThreatActorTechniqueCioItem(BaseModel):
+class ThreatActorCioItem(BaseModel):
     actor_id: int
     name: str
-    matched_technique_ids: list[str]
     capability: bool
     intent: bool
     opportunity: bool
+
+
+class ThreatActorTechniqueCioItem(ThreatActorCioItem):
+    matched_technique_ids: list[str]
+
+
+class ThreatActorCioAssessmentResponse(BaseModel):
+    client_name: str
+    capability: bool
+    intent: bool
+    opportunity: bool
+    matched_actor_count: int
+    actors: list[ThreatActorCioItem]
 
 
 class ThreatActorTechniqueCioResponse(BaseModel):

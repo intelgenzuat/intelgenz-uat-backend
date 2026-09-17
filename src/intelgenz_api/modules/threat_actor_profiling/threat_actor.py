@@ -19,6 +19,8 @@ from intelgenz_api.modules.threat_actor_profiling.schemas import (
     TechniqueSearchItem,
     TechniqueSearchResponse,
     ThreatActorAttackTechniqueDefenseSource,
+    ThreatActorCioAssessmentResponse,
+    ThreatActorCioItem,
     ThreatActorD3fendTacticMapping,
     ThreatActorD3fendTechniqueMappingItem,
     ThreatActorMappingRequest,
@@ -110,15 +112,39 @@ THREAT_ACTOR_ALL_TECHNIQUES_CIO_QUERY = text("""
     SELECT
         threat_actor.actor_id,
         threat_actor.canonical_name AS name,
-        LOWER(threat_actor_cio_curation_summary.capability) = 'yes' AS capability,
-        LOWER(threat_actor_cio_curation_summary.intent) = 'yes' AS intent,
-        LOWER(threat_actor_cio_curation_summary.opportunity) = 'yes' AS opportunity
+        COALESCE(LOWER(threat_actor_cio_curation_summary.capability), '') = 'yes' AS capability,
+        COALESCE(LOWER(threat_actor_cio_curation_summary.intent), '') = 'yes' AS intent,
+        COALESCE(LOWER(threat_actor_cio_curation_summary.opportunity), '') = 'yes' AS opportunity
     FROM matched_actors
     JOIN public.threat_actor
         ON threat_actor.actor_id = matched_actors.actor_id
     JOIN public.threat_actor_cio_curation_summary
         ON threat_actor_cio_curation_summary.actor_id = matched_actors.actor_id
        AND threat_actor_cio_curation_summary.client_name = :client_name
+    WHERE (COALESCE(LOWER(threat_actor_cio_curation_summary.capability), '') = 'yes') = :capability
+      AND (COALESCE(LOWER(threat_actor_cio_curation_summary.intent), '') = 'yes') = :intent
+      AND (
+          COALESCE(LOWER(threat_actor_cio_curation_summary.opportunity), '') = 'yes'
+      ) = :opportunity
+    ORDER BY threat_actor.canonical_name, threat_actor.actor_id
+""")
+
+THREAT_ACTOR_CIO_ASSESSMENT_QUERY = text("""
+    SELECT
+        threat_actor.actor_id,
+        threat_actor.canonical_name AS name,
+        COALESCE(LOWER(threat_actor_cio_curation_summary.capability), '') = 'yes' AS capability,
+        COALESCE(LOWER(threat_actor_cio_curation_summary.intent), '') = 'yes' AS intent,
+        COALESCE(LOWER(threat_actor_cio_curation_summary.opportunity), '') = 'yes' AS opportunity
+    FROM public.threat_actor_cio_curation_summary
+    JOIN public.threat_actor
+        ON threat_actor.actor_id = threat_actor_cio_curation_summary.actor_id
+    WHERE threat_actor_cio_curation_summary.client_name = :client_name
+      AND (COALESCE(LOWER(threat_actor_cio_curation_summary.capability), '') = 'yes') = :capability
+      AND (COALESCE(LOWER(threat_actor_cio_curation_summary.intent), '') = 'yes') = :intent
+      AND (
+          COALESCE(LOWER(threat_actor_cio_curation_summary.opportunity), '') = 'yes'
+      ) = :opportunity
     ORDER BY threat_actor.canonical_name, threat_actor.actor_id
 """)
 
@@ -163,6 +189,17 @@ def _actor_references(actors: dict[int, str]) -> list[ThreatActorUsingTechnique]
 def _overlap_percentage(overlap_count: int, selected_actor_count: int) -> int:
     """Treat techniques used by only one selected actor as no overlap."""
     return round(100 * overlap_count / selected_actor_count) if overlap_count > 1 else 0
+
+
+def _normalize_client_name(client_name: str) -> str:
+    """Normalize and validate a client profile name."""
+    normalized_client_name = client_name.strip().upper()
+    if not normalized_client_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="client_name must contain at least one non-space character.",
+        )
+    return normalized_client_name
 
 
 def _parse_technique_ids(technique_ids: list[str]) -> list[str]:
@@ -285,6 +322,59 @@ async def search_mitre_technique_ids(
 
 
 @router.get(
+    "/by-assessment",
+    response_model=ThreatActorCioAssessmentResponse,
+    tags=["Threat Actor Profiling"],
+)
+async def find_threat_actors_by_assessment(
+    client_name: Annotated[
+        str,
+        Query(min_length=1, max_length=200, description="Client profile name for CIO assessment."),
+    ],
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+    capability: Annotated[bool, Query(description="Required Capability value.")] = True,
+    intent: Annotated[bool, Query(description="Required Intent value.")] = True,
+    opportunity: Annotated[bool, Query(description="Required Opportunity value.")] = True,
+) -> ThreatActorCioAssessmentResponse:
+    """Find client-assessed actors matching the exact CIO true/false combination."""
+    normalized_client_name = _normalize_client_name(client_name)
+    try:
+        result = await session.execute(
+            THREAT_ACTOR_CIO_ASSESSMENT_QUERY,
+            {
+                "client_name": normalized_client_name,
+                "capability": capability,
+                "intent": intent,
+                "opportunity": opportunity,
+            },
+        )
+        rows = list(result.mappings())
+    except (OSError, SQLAlchemyError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Threat actor profiling is temporarily unavailable.",
+        ) from error
+
+    return ThreatActorCioAssessmentResponse(
+        client_name=normalized_client_name,
+        capability=capability,
+        intent=intent,
+        opportunity=opportunity,
+        matched_actor_count=len(rows),
+        actors=[
+            ThreatActorCioItem(
+                actor_id=row["actor_id"],
+                name=row["name"],
+                capability=row["capability"],
+                intent=row["intent"],
+                opportunity=row["opportunity"],
+            )
+            for row in rows
+        ],
+    )
+
+
+@router.get(
     "/by-techniques",
     response_model=ThreatActorTechniqueCioResponse,
     tags=["Threat Actor Profiling"],
@@ -305,15 +395,13 @@ async def find_threat_actors_by_techniques(
         Query(min_length=1, max_length=200, description="Client profile name for CIO assessment."),
     ],
     session: Annotated[AsyncSession, Depends(get_database_session)],
+    capability: Annotated[bool, Query(description="Required Capability value.")] = True,
+    intent: Annotated[bool, Query(description="Required Intent value.")] = True,
+    opportunity: Annotated[bool, Query(description="Required Opportunity value.")] = True,
 ) -> ThreatActorTechniqueCioResponse:
     """Find client-assessed actors that use every requested ATT&CK technique."""
     requested_technique_ids = _parse_technique_ids(technique_ids)
-    normalized_client_name = client_name.strip().upper()
-    if not normalized_client_name:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="client_name must contain at least one non-space character.",
-        )
+    normalized_client_name = _normalize_client_name(client_name)
     try:
         result = await session.execute(
             THREAT_ACTOR_ALL_TECHNIQUES_CIO_QUERY,
@@ -321,6 +409,9 @@ async def find_threat_actors_by_techniques(
                 "technique_ids": requested_technique_ids,
                 "technique_count": len(requested_technique_ids),
                 "client_name": normalized_client_name,
+                "capability": capability,
+                "intent": intent,
+                "opportunity": opportunity,
             },
         )
         rows = list(result.mappings())
