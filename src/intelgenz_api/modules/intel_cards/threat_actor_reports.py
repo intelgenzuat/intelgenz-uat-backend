@@ -48,6 +48,15 @@ from intelgenz_api.modules.intel_cards.schemas import (
 
 router = APIRouter(tags=["intel cards"])
 
+DEFAULT_EXECUTION_PATH_DESCRIPTION = (
+    "The 3AM operators gain access, run recon commands, then use Cobalt Strike and "
+    "PsExec to escalate privileges, move laterally and establish persistence through "
+    "new user accounts. Before encrypting, they exfiltrate data and the Rust-based "
+    "payload stops security and backup services and deletes Volume Shadow Copies to "
+    "prevent recovery. The payload then encrypts files with the .threeamtime extension, "
+    "drops a ransom note, and the group threatens to leak the stolen data."
+)
+
 THREAT_ACTOR_CARD_PAGE_QUERY = text("""
     SELECT
         actor_id,
@@ -803,6 +812,7 @@ async def get_threat_actor_intel_cards(
                     if _as_str(item.get("event"))
                 ],
                 execution=ThreatActorCardExecution(
+                    execution_path_description=DEFAULT_EXECUTION_PATH_DESCRIPTION,
                     confirmed_paths=_confirmed_paths(
                         execution_path_rows[actor_id], actor_steps, ttp_rows[actor_id]
                     ),

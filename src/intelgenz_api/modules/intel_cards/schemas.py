@@ -256,6 +256,7 @@ class ThreatActorCardObservedActivity(BaseModel):
 
 
 class ThreatActorCardExecution(BaseModel):
+    execution_path_description: str
     confirmed_paths: list[ThreatActorCardExecutionPath]
     observed_activities: list[ThreatActorCardObservedActivity]
 
