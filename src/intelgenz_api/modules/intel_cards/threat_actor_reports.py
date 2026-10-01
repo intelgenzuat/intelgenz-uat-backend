@@ -281,7 +281,14 @@ VULNERABILITIES_QUERY = text("""
     ORDER BY ta_vulnerability_id
 """)
 TTPS_QUERY = text("""
-    SELECT actor_id, tactic, technique_id, technique_name, procedure
+    SELECT
+        actor_id,
+        tactic,
+        technique_id,
+        technique_name,
+        procedure,
+        execution_path_id,
+        execution_step
     FROM public.ta_mitre_attack
     WHERE actor_id = ANY(CAST(:actor_ids AS BIGINT[]))
     ORDER BY tactic, technique_id, ta_mitre_attack_id
@@ -304,6 +311,10 @@ IOCS_QUERY = text("""
 
 def _as_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _as_int(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
 
 
 def _split_values(value: Any) -> list[str]:
@@ -340,11 +351,23 @@ def _display_values(rows: list[dict[str, Any]], key: str) -> tuple[list[str], in
     return values[:3], max(0, len(values) - 3)
 
 
-def _execution_step(row: dict[str, Any]) -> ThreatActorCardExecutionStep:
+def _ttp(row: dict[str, Any]) -> ThreatActorCardTtp:
+    return ThreatActorCardTtp(
+        tactic=_as_str(row.get("tactic")),
+        technique_id=_as_str(row.get("technique_id")),
+        technique=_as_str(row.get("technique_name")),
+        procedure=_as_str(row.get("procedure")),
+    )
+
+
+def _execution_step(
+    row: dict[str, Any],
+    ttps: list[ThreatActorCardTtp],
+) -> ThreatActorCardExecutionStep:
     action = _as_str(row.get("action"))
-    step = row.get("step")
+    step = _as_int(row.get("step"))
     return ThreatActorCardExecutionStep(
-        step=step if isinstance(step, int) else None,
+        step=step,
         title=action or "",
         action=action,
         categories=_split_values(row.get("behavior_categories")),
@@ -353,29 +376,60 @@ def _execution_step(row: dict[str, Any]) -> ThreatActorCardExecutionStep:
         vulnerabilities=_split_values(row.get("vulnerabilities")),
         infrastructure=_split_values(row.get("infrastructure")),
         artifacts=_split_values(row.get("artifacts")),
+        ttps=ttps,
     )
 
 
 def _confirmed_paths(
     path_rows: list[dict[str, Any]],
     step_rows: list[dict[str, Any]],
+    ttp_rows: list[dict[str, Any]],
 ) -> list[ThreatActorCardExecutionPath]:
-    steps_by_path: defaultdict[str, list[ThreatActorCardExecutionStep]] = defaultdict(list)
+    step_rows_by_path: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in step_rows:
         path_id = _as_str(row.get("path_id"))
         if path_id:
-            steps_by_path[path_id].append(_execution_step(row))
-    return [
-        ThreatActorCardExecutionPath(
-            campaign=_as_str(row.get("campaign")),
-            date_start=_as_str(row.get("date_start")),
-            date_end=_as_str(row.get("date_end")),
-            target_context=_as_str(row.get("target_context")),
-            steps=steps_by_path[path_id],
+            step_rows_by_path[path_id].append(row)
+
+    steps_by_path = {
+        path_id: {step for row in rows if (step := _as_int(row.get("step"))) is not None}
+        for path_id, rows in step_rows_by_path.items()
+    }
+    ttps_by_path_step: defaultdict[tuple[str, int], list[ThreatActorCardTtp]] = defaultdict(list)
+    ttps_by_path: defaultdict[str, list[ThreatActorCardTtp]] = defaultdict(list)
+    for row in ttp_rows:
+        path_id = _as_str(row.get("execution_path_id"))
+        step = _as_int(row.get("execution_step"))
+        if not path_id:
+            continue
+        ttp = _ttp(row)
+        if step is not None and step in steps_by_path.get(path_id, set()):
+            ttps_by_path_step[(path_id, step)].append(ttp)
+        else:
+            ttps_by_path[path_id].append(ttp)
+
+    confirmed_paths: list[ThreatActorCardExecutionPath] = []
+    for row in path_rows:
+        path_id = _as_str(row.get("path_id"))
+        if not path_id:
+            continue
+        steps = []
+        for step_row in step_rows_by_path[path_id]:
+            step = _as_int(step_row.get("step"))
+            step_ttps = ttps_by_path_step[(path_id, step)] if step is not None else []
+            steps.append(_execution_step(step_row, step_ttps))
+        confirmed_paths.append(
+            ThreatActorCardExecutionPath(
+                path_id=path_id,
+                campaign=_as_str(row.get("campaign")),
+                date_start=_as_str(row.get("date_start")),
+                date_end=_as_str(row.get("date_end")),
+                target_context=_as_str(row.get("target_context")),
+                steps=steps,
+                ttps=ttps_by_path[path_id],
+            )
         )
-        for row in path_rows
-        if (path_id := _as_str(row.get("path_id")))
-    ]
+    return confirmed_paths
 
 
 @router.get(
@@ -512,9 +566,7 @@ async def list_threat_actor_intel_cards(
                     ),
                     last_seen=ThreatActorCardLastSeen(
                         date=last_seen_date,
-                        raw_value=(
-                            None if last_seen_date else _as_str(row.get("last_seen_raw"))
-                        ),
+                        raw_value=(None if last_seen_date else _as_str(row.get("last_seen_raw"))),
                     ),
                 ),
             )
@@ -751,7 +803,9 @@ async def get_threat_actor_intel_cards(
                     if _as_str(item.get("event"))
                 ],
                 execution=ThreatActorCardExecution(
-                    confirmed_paths=_confirmed_paths(execution_path_rows[actor_id], actor_steps),
+                    confirmed_paths=_confirmed_paths(
+                        execution_path_rows[actor_id], actor_steps, ttp_rows[actor_id]
+                    ),
                     observed_activities=[
                         ThreatActorCardObservedActivity(
                             activity=_as_str(item.get("action")) or "",
@@ -798,15 +852,7 @@ async def get_threat_actor_intel_cards(
                     )
                     for item in vulnerability_rows[actor_id]
                 ],
-                ttps=[
-                    ThreatActorCardTtp(
-                        tactic=_as_str(item.get("tactic")),
-                        technique_id=_as_str(item.get("technique_id")),
-                        technique=_as_str(item.get("technique_name")),
-                        procedure=_as_str(item.get("procedure")),
-                    )
-                    for item in ttp_rows[actor_id]
-                ],
+                ttps=[_ttp(item) for item in ttp_rows[actor_id]],
                 iocs=[
                     ThreatActorCardIoc(
                         type=_as_str(item.get("indicator_type")),

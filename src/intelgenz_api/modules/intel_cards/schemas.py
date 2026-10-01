@@ -214,6 +214,13 @@ class ThreatActorCardTimelineItem(BaseModel):
     campaign: str | None
 
 
+class ThreatActorCardTtp(BaseModel):
+    tactic: str | None
+    technique_id: str | None
+    technique: str | None
+    procedure: str | None
+
+
 class ThreatActorCardExecutionStep(BaseModel):
     step: int | None
     title: str
@@ -224,14 +231,17 @@ class ThreatActorCardExecutionStep(BaseModel):
     vulnerabilities: list[str]
     infrastructure: list[str]
     artifacts: list[str]
+    ttps: list[ThreatActorCardTtp]
 
 
 class ThreatActorCardExecutionPath(BaseModel):
+    path_id: str
     campaign: str | None
     date_start: str | None
     date_end: str | None
     target_context: str | None
     steps: list[ThreatActorCardExecutionStep]
+    ttps: list[ThreatActorCardTtp]
 
 
 class ThreatActorCardObservedActivity(BaseModel):
@@ -271,13 +281,6 @@ class ThreatActorCardVulnerability(BaseModel):
     product: str | None
     relationship: str | None
     role: str | None
-
-
-class ThreatActorCardTtp(BaseModel):
-    tactic: str | None
-    technique_id: str | None
-    technique: str | None
-    procedure: str | None
 
 
 class ThreatActorCardIoc(BaseModel):
