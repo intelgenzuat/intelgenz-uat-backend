@@ -1,7 +1,7 @@
 """Client-scoped emerging threat report list and detail endpoints."""
 
 from math import ceil
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
@@ -13,9 +13,15 @@ from intelgenz_api.modules.emerging_threats.schemas import (
     EmergingThreatReportDetail,
     EmergingThreatReportListItem,
     EmergingThreatReportListPage,
-    EmergingThreatReportSection,
     EtrActivityPeriod,
-    EtrTargeting,
+    EtrDefenseGuidanceSection,
+    EtrExecutionSection,
+    EtrImpactOverviewSection,
+    EtrListImpactOverview,
+    EtrListReport,
+    EtrNarrativeSection,
+    EtrViewActor,
+    EtrViewReport,
 )
 
 router = APIRouter()
@@ -26,13 +32,8 @@ ETR_REPORT_LIST_QUERY = text("""
     SELECT
         report.report_id,
         report.report_title AS title,
-        report.report_subtitle AS subtitle,
-        report.actor_name,
-        report.report_type,
-        report.curation,
         report.activity_period_start,
         report.activity_period_end,
-        report.activity_period_description,
         impact.severity,
         ARRAY(
             SELECT region
@@ -52,8 +53,7 @@ ETR_REPORT_LIST_QUERY = text("""
             WHERE section_id = impact.section_id
             ORDER BY ordinal
         ) AS sectors
-    FROM public.etr_client AS client
-    JOIN public.etr_report AS report ON report.report_id = client.report_id
+    FROM public.etr_report AS report
     LEFT JOIN LATERAL (
         SELECT section_id, severity
         FROM public.etr_section
@@ -62,7 +62,18 @@ ETR_REPORT_LIST_QUERY = text("""
         ORDER BY ordinal
         LIMIT 1
     ) AS impact ON TRUE
-    WHERE client.client_name = :client_name
+    WHERE (
+        :curated_only = FALSE
+        OR (
+            LOWER(BTRIM(COALESCE(report.curation, ''))) IN ('yes', 'curated')
+            AND EXISTS (
+                SELECT 1
+                FROM public.etr_client AS client
+                WHERE client.report_id = report.report_id
+                  AND client.client_name = :client_name
+            )
+        )
+      )
     ORDER BY
         COALESCE(NULLIF(report.activity_period_end, ''), NULLIF(report.activity_period_start, ''))
             DESC NULLS LAST,
@@ -72,31 +83,44 @@ ETR_REPORT_LIST_QUERY = text("""
 
 ETR_REPORT_LIST_COUNT_QUERY = text("""
     SELECT COUNT(*)
-    FROM public.etr_client
-    WHERE client_name = :client_name
+    FROM public.etr_report AS report
+    WHERE (
+        :curated_only = FALSE
+        OR (
+            LOWER(BTRIM(COALESCE(report.curation, ''))) IN ('yes', 'curated')
+            AND EXISTS (
+                SELECT 1
+                FROM public.etr_client AS client
+                WHERE client.report_id = report.report_id
+                  AND client.client_name = :client_name
+            )
+        )
+      )
 """)
 
 ETR_REPORT_HEADER_QUERY = text("""
     SELECT
         report.report_id,
-        report.source_file,
-        client.client_name,
-        report.report_type,
         report.report_title AS title,
         report.report_subtitle AS subtitle,
         report.actor_name,
-        report.curation,
         report.activity_period_start,
-        report.activity_period_end,
-        report.activity_period_description
-    FROM public.etr_client AS client
-    JOIN public.etr_report AS report ON report.report_id = client.report_id
-    WHERE client.client_name = :client_name
-      AND report.report_id = :report_id
+        report.activity_period_end
+    FROM public.etr_report AS report
+    WHERE report.report_id = :report_id
+      AND (
+          :client_name IS NULL
+          OR EXISTS (
+              SELECT 1
+              FROM public.etr_client AS client
+              WHERE client.report_id = report.report_id
+                AND client.client_name = :client_name
+          )
+      )
 """)
 
 ETR_SECTIONS_QUERY = text("""
-    SELECT section_id, section_type, section_title, impact, severity
+    SELECT section_id, section_type, section_title, content, summary, impact, severity
     FROM public.etr_section
     WHERE report_id = :report_id
     ORDER BY ordinal, section_id
@@ -182,9 +206,6 @@ EXECUTION_PATHS_QUERY = text("""
         execution_path_id,
         section_id,
         path_title,
-        campaign,
-        coverage_note,
-        mermaid,
         period_start,
         period_end
     FROM public.etr_execution_path
@@ -246,27 +267,107 @@ async def _fetch_rows(
     return [dict(row) for row in result.mappings()]
 
 
+def _narrative_role(
+    title: str | None, actor_name: str | None
+) -> Literal["actor_introduction", "story_introduction", "body", "conclusion"]:
+    """Classify narrative sections into the UI's four display roles."""
+    normalized_title = (title or "").casefold()
+    normalized_actor_name = (actor_name or "").casefold()
+    if normalized_title.startswith("about") and (
+        not normalized_actor_name or normalized_actor_name in normalized_title
+    ):
+        return "actor_introduction"
+    if "overview" in normalized_title:
+        return "story_introduction"
+    if "conclusion" in normalized_title:
+        return "conclusion"
+    return "body"
+
+
+def _view_sections(
+    section_rows: list[dict[str, Any]],
+    sections_by_id: dict[int, dict[str, Any]],
+    actor_name: str | None,
+) -> list[Any]:
+    """Return only the section shapes used by the report-view UI."""
+    sections: list[Any] = []
+    for row in section_rows:
+        section = sections_by_id[row["section_id"]]
+        section_type = str(section["section_type"] or "").casefold().replace("-", "_")
+        title = section["title"]
+        if section_type == "impact_overview":
+            targeting = section["targeting"]
+            sections.append(
+                EtrImpactOverviewSection(
+                    affected_platforms=section["affected_platforms"],
+                    impacted_users=section["impacted_users"],
+                    impact=section["impact"],
+                    severity=section["severity"],
+                    affected_regions=targeting["regions"],
+                    affected_countries=targeting["countries"],
+                    affected_sectors=targeting["sectors"],
+                )
+            )
+        elif (
+            section_type in {"attack_techniques", "attack_technique"} or "execution" in section_type
+        ):
+            sections.append(
+                EtrExecutionSection(
+                    title=title,
+                    summary=section["summary"],
+                    paths=section["execution_paths"],
+                )
+            )
+        elif "defense" in section_type or "guidance" in section_type:
+            sections.append(EtrDefenseGuidanceSection(title=title, items=section["items"]))
+        else:
+            sections.append(
+                EtrNarrativeSection(
+                    title=title,
+                    content=section["content"],
+                    references=[],
+                    role=_narrative_role(title, actor_name),
+                )
+            )
+    return sections
+
+
 @router.get("/reports", response_model=EmergingThreatReportListPage)
 async def list_emerging_threat_reports(
-    client_name: Annotated[
-        str,
-        Query(min_length=1, max_length=200, description="Client name assigned to the reports."),
-    ],
     session: Annotated[AsyncSession, Depends(get_database_session)],
+    client_name: Annotated[
+        str | None,
+        Query(
+            min_length=1,
+            max_length=200,
+            description="Required only for view=curated; ignored for view=all.",
+        ),
+    ] = None,
     page: Annotated[int, Query(ge=1)] = 1,
+    view: Annotated[
+        Literal["all", "curated"],
+        Query(description="all returns every client report; curated returns curated reports only."),
+    ] = "all",
 ) -> EmergingThreatReportListPage:
-    """Return six lightweight emerging-threat report cards for one client."""
-    normalized_client_name = _normalize_client_name(client_name)
+    """Return six global reports or six curated reports for one client."""
+    normalized_client_name = _normalize_client_name(client_name) if client_name else None
+    curated_only = view == "curated"
+    if curated_only and normalized_client_name is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="client_name is required when view=curated.",
+        )
     try:
         total_items = await session.scalar(
             ETR_REPORT_LIST_COUNT_QUERY,
-            {"client_name": normalized_client_name},
+            {"client_name": normalized_client_name, "curated_only": curated_only},
         )
         rows = await _fetch_rows(
             session,
             ETR_REPORT_LIST_QUERY,
             {
                 "client_name": normalized_client_name,
+                "curated_only": curated_only,
                 "limit": ETR_REPORTS_PER_PAGE,
                 "offset": (page - 1) * ETR_REPORTS_PER_PAGE,
             },
@@ -285,22 +386,21 @@ async def list_emerging_threat_reports(
         items=[
             EmergingThreatReportListItem(
                 report_id=row["report_id"],
-                title=row["title"],
-                subtitle=row["subtitle"],
-                actor_name=row["actor_name"],
-                report_type=row["report_type"],
-                curation=row["curation"],
-                activity_period=EtrActivityPeriod(
-                    start=row["activity_period_start"],
-                    end=row["activity_period_end"],
-                    description=row["activity_period_description"],
+                report=EtrListReport(
+                    title=row["title"],
+                    activity_period=EtrActivityPeriod(
+                        start=row["activity_period_start"],
+                        end=row["activity_period_end"],
+                    ),
                 ),
-                targeting=EtrTargeting(
-                    regions=row["regions"] or [],
-                    countries=row["countries"] or [],
-                    sectors=row["sectors"] or [],
-                ),
-                severity=row["severity"],
+                sections=[
+                    EtrListImpactOverview(
+                        affected_regions=row["regions"] or [],
+                        affected_countries=row["countries"] or [],
+                        affected_sectors=row["sectors"] or [],
+                        severity=row["severity"],
+                    )
+                ],
             )
             for row in rows
         ],
@@ -310,14 +410,18 @@ async def list_emerging_threat_reports(
 @router.get("/reports/{report_id}", response_model=EmergingThreatReportDetail)
 async def get_emerging_threat_report(
     report_id: int,
-    client_name: Annotated[
-        str,
-        Query(min_length=1, max_length=200, description="Client name assigned to the report."),
-    ],
     session: Annotated[AsyncSession, Depends(get_database_session)],
+    client_name: Annotated[
+        str | None,
+        Query(
+            min_length=1,
+            max_length=200,
+            description="Optional client scope; use when opening a curated report.",
+        ),
+    ] = None,
 ) -> EmergingThreatReportDetail:
     """Return the complete normalized report selected from an emerging-threat card."""
-    normalized_client_name = _normalize_client_name(client_name)
+    normalized_client_name = _normalize_client_name(client_name) if client_name else None
     try:
         header_rows = await _fetch_rows(
             session,
@@ -333,19 +437,16 @@ async def get_emerging_threat_report(
         section_rows = await _fetch_rows(session, ETR_SECTIONS_QUERY, {"report_id": report_id})
         if not section_rows:
             return EmergingThreatReportDetail(
-                report_id=header["report_id"],
-                source_file=header["source_file"],
-                client_name=header["client_name"],
-                report_type=header["report_type"],
-                title=header["title"],
-                subtitle=header["subtitle"],
-                actor_name=header["actor_name"],
-                curation=header["curation"],
-                activity_period=EtrActivityPeriod(
-                    start=header["activity_period_start"],
-                    end=header["activity_period_end"],
-                    description=header["activity_period_description"],
+                report=EtrViewReport(
+                    title=header["title"],
+                    subtitle=header["subtitle"],
+                    author=None,
+                    activity_period=EtrActivityPeriod(
+                        start=header["activity_period_start"],
+                        end=header["activity_period_end"],
+                    ),
                 ),
+                actor=EtrViewActor(name=header["actor_name"]),
                 sections=[],
             )
 
@@ -354,8 +455,8 @@ async def get_emerging_threat_report(
             row["section_id"]: {
                 "section_type": row["section_type"],
                 "title": row["section_title"],
-                "content": [],
-                "summary": [],
+                "content": [row["content"]] if row["content"] else [],
+                "summary": [row["summary"]] if row["summary"] else [],
                 "impact": row["impact"],
                 "severity": row["severity"],
                 "affected_platforms": [],
@@ -429,14 +530,10 @@ async def get_emerging_threat_report(
         for row in path_rows:
             path = {
                 "title": row["path_title"],
-                "campaign": row["campaign"],
-                "coverage_note": row["coverage_note"],
                 "description": [],
-                "mermaid": row["mermaid"],
                 "activity_period": {
                     "start": row["period_start"],
                     "end": row["period_end"],
-                    "description": None,
                 },
                 "steps": [],
                 "ttps": [],
@@ -484,20 +581,15 @@ async def get_emerging_threat_report(
         ) from error
 
     return EmergingThreatReportDetail(
-        report_id=header["report_id"],
-        source_file=header["source_file"],
-        client_name=header["client_name"],
-        report_type=header["report_type"],
-        title=header["title"],
-        subtitle=header["subtitle"],
-        actor_name=header["actor_name"],
-        curation=header["curation"],
-        activity_period=EtrActivityPeriod(
-            start=header["activity_period_start"],
-            end=header["activity_period_end"],
-            description=header["activity_period_description"],
+        report=EtrViewReport(
+            title=header["title"],
+            subtitle=header["subtitle"],
+            author=None,
+            activity_period=EtrActivityPeriod(
+                start=header["activity_period_start"],
+                end=header["activity_period_end"],
+            ),
         ),
-        sections=[
-            EmergingThreatReportSection(**sections_by_id[row["section_id"]]) for row in section_rows
-        ],
+        actor=EtrViewActor(name=header["actor_name"]),
+        sections=_view_sections(section_rows, sections_by_id, header["actor_name"]),
     )

@@ -1,4 +1,6 @@
-"""Response models for client-specific emerging threat reports."""
+"""UI-focused response models for client-specific emerging threat reports."""
+
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -6,29 +8,31 @@ from pydantic import BaseModel, Field
 class EtrActivityPeriod(BaseModel):
     start: str | None = None
     end: str | None = None
-    description: str | None = None
 
 
-class EtrTargeting(BaseModel):
-    regions: list[str] = Field(default_factory=list)
-    countries: list[str] = Field(default_factory=list)
-    sectors: list[str] = Field(default_factory=list)
-
-
-class EmergingThreatReportListItem(BaseModel):
-    report_id: int
+class EtrListReport(BaseModel):
     title: str | None = None
-    subtitle: str | None = None
-    actor_name: str | None = None
-    report_type: str | None = None
-    curation: str | None = None
     activity_period: EtrActivityPeriod
-    targeting: EtrTargeting
+
+
+class EtrListImpactOverview(BaseModel):
+    type: Literal["impact_overview"] = "impact_overview"
+    affected_regions: list[str] = Field(default_factory=list)
+    affected_countries: list[str] = Field(default_factory=list)
+    affected_sectors: list[str] = Field(default_factory=list)
     severity: str | None = None
 
 
+class EmergingThreatReportListItem(BaseModel):
+    """Card data; report_id is retained only for the View Report request."""
+
+    report_id: int
+    report: EtrListReport
+    sections: list[EtrListImpactOverview]
+
+
 class EmergingThreatReportListPage(BaseModel):
-    client_name: str
+    client_name: str | None = None
     page: int
     page_size: int = 6
     total_items: int
@@ -71,38 +75,65 @@ class EtrExecutionTtp(BaseModel):
 
 class EtrExecutionPath(BaseModel):
     title: str | None = None
-    campaign: str | None = None
-    coverage_note: str | None = None
     description: list[str] = Field(default_factory=list)
-    mermaid: str | None = None
     activity_period: EtrActivityPeriod
     steps: list[EtrExecutionStep] = Field(default_factory=list)
     ttps: list[EtrExecutionTtp] = Field(default_factory=list)
 
 
-class EmergingThreatReportSection(BaseModel):
-    section_type: str
-    title: str | None = None
-    content: list[str] = Field(default_factory=list)
-    summary: list[str] = Field(default_factory=list)
-    impact: str | None = None
-    severity: str | None = None
+class EtrImpactOverviewSection(BaseModel):
+    type: Literal["impact_overview"] = "impact_overview"
     affected_platforms: list[str] = Field(default_factory=list)
     impacted_users: list[str] = Field(default_factory=list)
-    targeting: EtrTargeting
+    impact: str | None = None
+    severity: str | None = None
+    affected_regions: list[str] = Field(default_factory=list)
+    affected_countries: list[str] = Field(default_factory=list)
+    affected_sectors: list[str] = Field(default_factory=list)
+
+
+class EtrNarrativeSection(BaseModel):
+    title: str | None = None
+    content: list[str] = Field(default_factory=list)
+    references: list[str] = Field(default_factory=list)
+    type: Literal["narrative"] = "narrative"
+    role: Literal["actor_introduction", "story_introduction", "body", "conclusion"]
+
+
+class EtrExecutionSection(BaseModel):
+    title: str | None = None
+    summary: list[str] = Field(default_factory=list)
+    paths: list[EtrExecutionPath] = Field(default_factory=list)
+    type: Literal["execution"] = "execution"
+
+
+class EtrDefenseGuidanceSection(BaseModel):
+    type: Literal["defense_guidance"] = "defense_guidance"
+    title: str | None = None
     items: list[EtrSectionItem] = Field(default_factory=list)
-    execution_paths: list[EtrExecutionPath] = Field(default_factory=list)
-    unplaced_ttps: list[EtrExecutionTtp] = Field(default_factory=list)
+
+
+EtrViewSection = Annotated[
+    EtrImpactOverviewSection
+    | EtrNarrativeSection
+    | EtrExecutionSection
+    | EtrDefenseGuidanceSection,
+    Field(discriminator="type"),
+]
+
+
+class EtrViewReport(BaseModel):
+    title: str | None = None
+    subtitle: str | None = None
+    author: str | None = None
+    activity_period: EtrActivityPeriod
+
+
+class EtrViewActor(BaseModel):
+    name: str | None = None
 
 
 class EmergingThreatReportDetail(BaseModel):
-    report_id: int
-    source_file: str
-    client_name: str
-    report_type: str | None = None
-    title: str | None = None
-    subtitle: str | None = None
-    actor_name: str | None = None
-    curation: str | None = None
-    activity_period: EtrActivityPeriod
-    sections: list[EmergingThreatReportSection]
+    report: EtrViewReport
+    actor: EtrViewActor
+    sections: list[EtrViewSection]
