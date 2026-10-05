@@ -109,12 +109,12 @@ ETR_REPORT_HEADER_QUERY = text("""
     FROM public.etr_report AS report
     WHERE report.report_id = :report_id
       AND (
-          :client_name IS NULL
+          CAST(:client_name AS TEXT) IS NULL
           OR EXISTS (
               SELECT 1
               FROM public.etr_client AS client
               WHERE client.report_id = report.report_id
-                AND client.client_name = :client_name
+                AND client.client_name = CAST(:client_name AS TEXT)
           )
       )
 """)
