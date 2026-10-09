@@ -77,13 +77,13 @@ THREAT_ACTOR_CARD_COUNT_QUERY = text("SELECT COUNT(*) FROM public.threat_actor")
 THREAT_ACTOR_CLIENT_CARD_COUNT_QUERY = text("""
     SELECT COUNT(*)
     FROM public.threat_actor_cio_curation_summary
-    WHERE client_name = :client_name
+    WHERE LOWER(client_name) = LOWER(:client_name)
 """)
 
 THREAT_ACTOR_CLIENT_CURATION_CARD_COUNT_QUERY = text("""
     SELECT COUNT(*)
     FROM public.threat_actor_cio_curation_summary
-    WHERE client_name = :client_name
+    WHERE LOWER(client_name) = LOWER(:client_name)
       AND curation = :curation
 """)
 
@@ -104,7 +104,7 @@ THREAT_ACTOR_CLIENT_CARD_SUMMARY_PAGE_QUERY = text("""
     FROM public.threat_actor_cio_curation_summary
     JOIN public.threat_actor
         ON threat_actor.actor_id = threat_actor_cio_curation_summary.actor_id
-    WHERE threat_actor_cio_curation_summary.client_name = :client_name
+    WHERE LOWER(threat_actor_cio_curation_summary.client_name) = LOWER(:client_name)
     ORDER BY threat_actor.canonical_name, threat_actor.actor_id
     LIMIT :limit OFFSET :offset
 """)
@@ -119,7 +119,7 @@ THREAT_ACTOR_CLIENT_CURATION_CARD_SUMMARY_PAGE_QUERY = text("""
     FROM public.threat_actor_cio_curation_summary
     JOIN public.threat_actor
         ON threat_actor.actor_id = threat_actor_cio_curation_summary.actor_id
-    WHERE threat_actor_cio_curation_summary.client_name = :client_name
+    WHERE LOWER(threat_actor_cio_curation_summary.client_name) = LOWER(:client_name)
       AND threat_actor_cio_curation_summary.curation = :curation
     ORDER BY threat_actor.canonical_name, threat_actor.actor_id
     LIMIT :limit OFFSET :offset
@@ -523,6 +523,7 @@ async def list_threat_actor_intel_cards(
                 items=[],
             )
         actor_type_rows = _rows_by_actor(await _fetch_rows(session, ACTOR_TYPES_QUERY, actor_ids))
+        alias_rows = _rows_by_actor(await _fetch_rows(session, ALIASES_QUERY, actor_ids))
         nexus_rows = _rows_by_actor(await _fetch_rows(session, NEXUS_QUERY, actor_ids))
         targeting_rows = _rows_by_actor(await _fetch_rows(session, TARGETING_QUERY, actor_ids))
     except HTTPException:
@@ -552,6 +553,7 @@ async def list_threat_actor_intel_cards(
             ThreatActorIntelCardListItem(
                 actor_id=actor_id,
                 name=name,
+                aliases=_unique_values(alias_rows[actor_id], "alias_name"),
                 summary=ThreatActorIntelCardListSummary(
                     status=_as_str(row.get("actor_status")),
                     actor_types=actor_types,

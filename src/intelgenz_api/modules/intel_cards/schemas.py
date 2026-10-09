@@ -151,6 +151,7 @@ class MalwareIntelCardListTimelineItem(BaseModel):
 class MalwareIntelCardListItem(BaseModel):
     malware_id: int
     name: str
+    aliases: list[str]
     summary: MalwareIntelCardListSummary
     activity_timeline: list[MalwareIntelCardListTimelineItem]
 
@@ -338,6 +339,7 @@ class ThreatActorIntelCardListSummary(BaseModel):
 class ThreatActorIntelCardListItem(BaseModel):
     actor_id: int
     name: str
+    aliases: list[str]
     summary: ThreatActorIntelCardListSummary
 
 

@@ -118,7 +118,7 @@ THREAT_ACTOR_ALL_TECHNIQUES_CIO_QUERY = text("""
         ON threat_actor.actor_id = matched_actors.actor_id
     JOIN public.threat_actor_cio_curation_summary
         ON threat_actor_cio_curation_summary.actor_id = matched_actors.actor_id
-       AND threat_actor_cio_curation_summary.client_name = :client_name
+       AND LOWER(threat_actor_cio_curation_summary.client_name) = LOWER(:client_name)
     WHERE (
             NOT :capability
             OR COALESCE(LOWER(threat_actor_cio_curation_summary.capability), '') = 'yes'
@@ -179,7 +179,7 @@ def _overlap_percentage(overlap_count: int, selected_actor_count: int) -> int:
 
 def _normalize_client_name(client_name: str) -> str:
     """Normalize and validate a client profile name."""
-    normalized_client_name = client_name.strip().upper()
+    normalized_client_name = client_name.strip()
     if not normalized_client_name:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

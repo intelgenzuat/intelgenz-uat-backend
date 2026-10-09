@@ -70,7 +70,7 @@ ETR_REPORT_LIST_QUERY = text("""
                 SELECT 1
                 FROM public.etr_client AS client
                 WHERE client.report_id = report.report_id
-                  AND client.client_name = :client_name
+                  AND LOWER(client.client_name) = LOWER(:client_name)
             )
         )
       )
@@ -92,7 +92,7 @@ ETR_REPORT_LIST_COUNT_QUERY = text("""
                 SELECT 1
                 FROM public.etr_client AS client
                 WHERE client.report_id = report.report_id
-                  AND client.client_name = :client_name
+                  AND LOWER(client.client_name) = LOWER(:client_name)
             )
         )
       )
@@ -114,7 +114,7 @@ ETR_REPORT_HEADER_QUERY = text("""
               SELECT 1
               FROM public.etr_client AS client
               WHERE client.report_id = report.report_id
-                AND client.client_name = CAST(:client_name AS TEXT)
+                AND LOWER(client.client_name) = LOWER(CAST(:client_name AS TEXT))
           )
       )
 """)
